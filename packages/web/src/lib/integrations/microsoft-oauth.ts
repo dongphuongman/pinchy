@@ -1,10 +1,7 @@
 // MICROSOFT_OAUTH_BASE_URL allows E2E tests to redirect OAuth token refresh calls
 // to a local mock server instead of https://login.microsoftonline.com/
-const EXPIRY_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
 
-export function isTokenExpired(expiresAt: string): boolean {
-  return new Date(expiresAt).getTime() - EXPIRY_BUFFER_MS < Date.now();
-}
+export { isTokenExpired } from "@/lib/integrations/oauth-token";
 
 export async function refreshAccessToken(opts: {
   tenantId: string;

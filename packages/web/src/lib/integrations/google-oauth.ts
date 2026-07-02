@@ -3,11 +3,8 @@
 const TOKEN_ENDPOINT = process.env.GMAIL_OAUTH_BASE_URL
   ? `${process.env.GMAIL_OAUTH_BASE_URL}/token`
   : "https://oauth2.googleapis.com/token";
-const EXPIRY_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
 
-export function isTokenExpired(expiresAt: string): boolean {
-  return new Date(expiresAt).getTime() - EXPIRY_BUFFER_MS < Date.now();
-}
+export { isTokenExpired } from "@/lib/integrations/oauth-token";
 
 export async function refreshAccessToken(opts: {
   refreshToken: string;
