@@ -219,6 +219,79 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     expect(res.status).toBe(400);
   });
 
+  // C8: pre-#328 template creation could persist raw per-tool operations
+  // ("search", "list") as agent_connection_permissions rows — before this
+  // fix the PUT schema validated `operation` as a bare non-empty string, so
+  // NEW (model:"email", operation:"search") rows could still be minted via
+  // the API today, creating an invisible standing "read" grant (the UI
+  // filtered these rows out of the checkbox matrix pre-C2) while the audit
+  // row logged the raw string "search". Restrict the email vocabulary to
+  // EMAIL_OPERATIONS (read/draft/send) at the schema layer; non-email models
+  // (e.g. Odoo's res.partner) are unaffected — this route is generic.
+  it("returns 400 for a legacy 'search' operation on model 'email', naming the allowed values", async () => {
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "email", operation: "search" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(JSON.stringify(body)).toContain("read");
+    expect(JSON.stringify(body)).toContain("draft");
+    expect(JSON.stringify(body)).toContain("send");
+  });
+
+  it("returns 400 for a legacy 'list' operation on model 'email'", async () => {
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "email", operation: "list" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 200 for a valid 'read' operation on model 'email'", async () => {
+    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
+    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
+    mockTxSelectWhere.mockResolvedValueOnce([]);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "email", operation: "read" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+  });
+
+  it("does not restrict operation vocabulary for non-email models (e.g. Odoo)", async () => {
+    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
+    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
+    mockTxSelectWhere.mockResolvedValueOnce([]);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "res.partner", operation: "search" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+  });
+
   it("returns 404 when agent does not exist", async () => {
     mockSelectWhere.mockResolvedValueOnce([]); // agent not found
 

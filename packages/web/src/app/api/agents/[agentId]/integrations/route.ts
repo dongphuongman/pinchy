@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { eq, and } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
@@ -7,11 +6,7 @@ import { agentConnectionPermissions, integrationConnections, agents } from "@/db
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const setAgentIntegrationsSchema = z.object({
-  connectionId: z.string().min(1),
-  permissions: z.array(z.object({ model: z.string().min(1), operation: z.string().min(1) })),
-});
+import { setAgentIntegrationsSchema } from "@/lib/schemas/agent-integrations";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
