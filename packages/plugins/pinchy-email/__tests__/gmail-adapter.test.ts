@@ -588,9 +588,13 @@ describe("GmailAdapter", () => {
       });
     });
 
-    it("decodes base64url (URL-safe alphabet), not standard base64", async () => {
-      // Bytes 0xFB 0xFF 0xBF encode to "-_-_" in base64url but "+/+/" in
-      // standard base64 — decoding with the wrong alphabet corrupts the data.
+    it("decodes attachment bytes faithfully, including high-bit bytes", async () => {
+      // 0xFB 0xFF 0xBF encode to "-_-_" (the base64url alphabet). This pins that
+      // getAttachment reconstructs raw bytes exactly — including the high-bit
+      // values that a text/utf-8 round trip would mangle. (Note: it does NOT
+      // pin base64url-vs-base64 specifically; Node's Buffer decoder accepts both
+      // alphabets interchangeably, so the alphabet choice in the adapter is a
+      // correctness-of-intent signal, not something a decode test can catch.)
       const bytes = Buffer.from([0xfb, 0xff, 0xbf]);
       mockGet.mockResolvedValue({
         data: {

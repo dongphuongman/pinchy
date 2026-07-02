@@ -321,9 +321,18 @@ describe("GraphAdapter.getAttachment", () => {
   beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
-  it("downloads a fileAttachment and decodes contentBytes (standard base64)", async () => {
+  it("downloads a fileAttachment and reconstructs its raw bytes", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    const bytes = Buffer.from("%PDF-1.7");
+    // Include high-bit bytes that encode to '+' and '/' in standard base64
+    // (e.g. 0xFB 0xFF 0xBF → "+/+/…") so the assertion exercises the full byte
+    // range through the decode, not just printable ASCII. (This does not pin
+    // base64-vs-base64url specifically — Node's Buffer decoder accepts both
+    // alphabets interchangeably; the adapter's choice of "base64" is a
+    // correctness-of-intent signal.)
+    const bytes = Buffer.concat([
+      Buffer.from("%PDF-1.7"),
+      Buffer.from([0xfb, 0xff, 0xbf]),
+    ]);
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -342,7 +351,7 @@ describe("GraphAdapter.getAttachment", () => {
     expect(result.filename).toBe("invoice.pdf");
     expect(result.mimeType).toBe("application/pdf");
     expect(Buffer.isBuffer(result.data)).toBe(true);
-    expect(result.data.toString("utf-8")).toBe("%PDF-1.7");
+    expect(result.data.equals(bytes)).toBe(true);
 
     const url = (fetch as Mock).mock.calls[0][0] as string;
     expect(url).toContain("/v1.0/me/messages/msg1/attachments/att-1");
