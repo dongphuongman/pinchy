@@ -308,11 +308,6 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
                             <Clock className="h-3 w-3" />
                             Setup in progress
                           </span>
-                        ) : conn.type === "google" ? (
-                          <>
-                            <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
-                            <span>Connected</span>
-                          </>
                         ) : conn.status === "auth_failed" ? (
                           <>
                             <AlertTriangle
@@ -330,6 +325,11 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
                                 {conn.lastError}
                               </span>
                             )}
+                          </>
+                        ) : conn.type === "google" ? (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+                            <span>Connected</span>
                           </>
                         ) : testing === conn.id ? (
                           <>

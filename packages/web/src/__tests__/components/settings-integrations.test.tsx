@@ -61,6 +61,21 @@ const authFailedMicrosoftConnection = {
   cannotDecrypt: false,
 };
 
+const authFailedGoogleConnection = {
+  id: "conn-google-2",
+  type: "google",
+  name: "user@gmail.com",
+  description: "",
+  credentials: "encrypted",
+  status: "auth_failed",
+  lastError: "401 from Google",
+  lastErrorAt: "2026-05-10T10:00:00Z",
+  data: null,
+  createdAt: "2026-04-13T12:00:00Z",
+  updatedAt: "2026-05-10T10:00:00Z",
+  cannotDecrypt: false,
+};
+
 function mockFetchConnections(connections: unknown[]) {
   return vi.spyOn(global, "fetch").mockImplementation((input) => {
     const url = typeof input === "string" ? input : (input as Request).url;
@@ -173,6 +188,23 @@ describe("SettingsIntegrations — auth_failed state", () => {
     await user.click(menuButton);
 
     expect(screen.getByText("Reconnect")).toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("renders the red 'Authentication failed' state (not 'Connected') for auth_failed Gmail connections", async () => {
+    const fetchSpy = mockFetchConnections([authFailedGoogleConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("user@gmail.com")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/Authentication failed/i)).toBeInTheDocument();
+    const warningIcon = document.querySelector("[aria-label='Authentication failed']");
+    expect(warningIcon).toBeInTheDocument();
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
 
     fetchSpy.mockRestore();
   });
