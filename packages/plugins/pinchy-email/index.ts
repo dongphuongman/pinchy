@@ -274,6 +274,22 @@ function assertCredentialsShape(
   }
 }
 
+/**
+ * Thrown by fetchCredentials when the credentials API responds non-ok.
+ * Carries `status` so callers (withAuthRetry) can discriminate the
+ * settings-missing 503 case from transient errors without string-matching
+ * the message.
+ */
+class CredentialsFetchError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "CredentialsFetchError";
+    this.status = status;
+  }
+}
+
 async function fetchCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
@@ -285,8 +301,25 @@ async function fetchCredentials(
   );
 
   if (!response.ok) {
-    throw new Error(
-      `Failed to fetch credentials: ${response.status} ${response.statusText}`,
+    // The route's error responses (e.g. 503 when OAuth settings are missing —
+    // see OAuthSettingsMissingError in the credentials route) carry an
+    // actionable message in the JSON body. Read it tolerantly: a body that
+    // isn't JSON, or a response shape without .json(), must not mask the
+    // original HTTP status in a secondary error. `.catch()` alone would not
+    // save us from a response object whose .json is missing entirely (that
+    // throws synchronously rather than rejecting), so wrap the call itself.
+    const body = await (async () => {
+      try {
+        return (await response.json()) as { error?: unknown };
+      } catch {
+        return null;
+      }
+    })();
+    const detail =
+      body && typeof body.error === "string" ? `: ${body.error}` : "";
+    throw new CredentialsFetchError(
+      `Failed to fetch credentials: ${response.status} ${response.statusText}${detail}`,
+      response.status,
     );
   }
 
@@ -385,18 +418,56 @@ const plugin = {
     }
 
     /**
+     * Report a connection as auth-failed and rethrow the original error
+     * unchanged. Shared by every place in withAuthRetry that decides an
+     * error is terminal (not worth retrying) so the "flag + rethrow" shape
+     * can't drift between call sites.
+     */
+    async function reportAndRethrow(
+      connectionId: string,
+      error: unknown,
+    ): Promise<never> {
+      const reason = error instanceof Error ? error.message : String(error);
+      // Read apiBaseUrl/gatewayToken dynamically (same as getOrCreateClient):
+      // they live on api.pluginConfig, not in this function's scope.
+      const apiBaseUrl = api.pluginConfig?.apiBaseUrl ?? "";
+      const gatewayToken = api.pluginConfig?.gatewayToken ?? "";
+      await reportAuthFailure(apiBaseUrl, connectionId, gatewayToken, reason);
+      throw error;
+    }
+
+    /**
      * Run an email adapter call with one transparent retry on auth failure.
      * The provider returns a 401 (or "Invalid Credentials") when the access
      * token is stale. Pinchy's credentials API auto-refreshes OAuth tokens
      * server-side, so on a 401 we invalidate the local cache, refetch
      * (which triggers the refresh), and retry once.
+     *
+     * Credentials-fetch failures are handled separately from provider-call
+     * failures: getOrCreateClient can throw a CredentialsFetchError with
+     * status 503 when the credentials route detects OAuth settings are
+     * missing entirely (OAuthSettingsMissingError) and there is no token to
+     * even attempt a call with. That's gated strictly on status 503 — the
+     * credentials route emits 503 exclusively for the settings-missing case,
+     * so treating it as an auth failure is safe. Any OTHER status (a
+     * transient 5xx, a network error, etc.) must NOT flip the connection to
+     * auth_failed — those are retried/surfaced like before, without touching
+     * connection health.
      */
     async function withAuthRetry<T>(
       agentId: string,
       config: AgentEmailConfig,
       fn: (adapter: EmailAdapter) => Promise<T>,
     ): Promise<T> {
-      const adapter = await getOrCreateClient(agentId, config);
+      let adapter: EmailAdapter;
+      try {
+        adapter = await getOrCreateClient(agentId, config);
+      } catch (err) {
+        if (err instanceof CredentialsFetchError && err.status === 503) {
+          return reportAndRethrow(config.connectionId, err);
+        }
+        throw err;
+      }
       try {
         return await fn(adapter);
       } catch (err) {
@@ -409,23 +480,22 @@ const plugin = {
           msg.includes("unauthorized");
         if (!isAuthError) throw err;
         invalidate(agentId, config.connectionId);
-        const fresh = await getOrCreateClient(agentId, config);
+        let fresh: EmailAdapter;
+        try {
+          fresh = await getOrCreateClient(agentId, config);
+        } catch (refetchErr) {
+          if (
+            refetchErr instanceof CredentialsFetchError &&
+            refetchErr.status === 503
+          ) {
+            return reportAndRethrow(config.connectionId, refetchErr);
+          }
+          throw refetchErr;
+        }
         try {
           return await fn(fresh);
         } catch (retryErr) {
-          const retryMsg =
-            retryErr instanceof Error ? retryErr.message : String(retryErr);
-          // Read apiBaseUrl/gatewayToken dynamically (same as getOrCreateClient):
-          // they live on api.pluginConfig, not in this function's scope.
-          const apiBaseUrl = api.pluginConfig?.apiBaseUrl ?? "";
-          const gatewayToken = api.pluginConfig?.gatewayToken ?? "";
-          await reportAuthFailure(
-            apiBaseUrl,
-            config.connectionId,
-            gatewayToken,
-            retryMsg,
-          );
-          throw retryErr;
+          return reportAndRethrow(config.connectionId, retryErr);
         }
       }
     }

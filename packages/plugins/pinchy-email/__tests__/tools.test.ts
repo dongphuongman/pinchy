@@ -634,6 +634,79 @@ describe("credential fetching", () => {
     );
     expect(reportCalls).toHaveLength(0);
   });
+
+  // REGRESSION (B3+B7): the credentials route can answer 503 instead of a
+  // 200-with-stale-tokens when the OAuth app settings are gone (see
+  // OAuthSettingsMissingError in the credentials route). That 503 body
+  // carries an actionable remediation message — it must reach the agent,
+  // and the connection must be flagged auth_failed so the admin re-authorize
+  // banner appears, exactly as it would for a provider-side 401.
+  it("surfaces the 503 body's remediation message instead of a generic 'Failed to fetch credentials'", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 503,
+      statusText: "Service Unavailable",
+      json: async () => ({
+        error:
+          "Microsoft OAuth settings missing — reconnect the mailbox or restore the OAuth app",
+      }),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(
+      "Microsoft OAuth settings missing — reconnect the mailbox or restore the OAuth app",
+    );
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it("reports the connection as auth-failed when the credentials fetch itself 503s (settings-missing case)", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 503,
+      statusText: "Service Unavailable",
+      json: async () => ({
+        error:
+          "Microsoft OAuth settings missing — reconnect the mailbox or restore the OAuth app",
+      }),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+    await tool.execute("call-1", {});
+
+    const reportCalls = mockFetch.mock.calls.filter((c) =>
+      String(c[0]).includes("report-auth-failure"),
+    );
+    expect(reportCalls).toHaveLength(1);
+    const [url, opts] = reportCalls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "http://pinchy:7777/api/internal/integrations/conn-1/report-auth-failure",
+    );
+    expect(opts.method).toBe("POST");
+    const headers = opts.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer test-gateway-token");
+    expect(headers["X-Plugin-Id"]).toBe("pinchy-email");
+    const body = JSON.parse(opts.body as string) as { reason: string };
+    expect(body.reason).toContain("OAuth settings missing");
+  });
+
+  it("does NOT report auth-failure for a plain 500 credentials-fetch error (no settings-missing semantics)", async () => {
+    mockCredentialFailure(500, "Internal Server Error");
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    const reportCalls = mockFetch.mock.calls.filter((c) =>
+      String(c[0]).includes("report-auth-failure"),
+    );
+    expect(reportCalls).toHaveLength(0);
+  });
 });
 
 describe("email_list", () => {
