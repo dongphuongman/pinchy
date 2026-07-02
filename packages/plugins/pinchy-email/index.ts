@@ -49,6 +49,20 @@ function humanReadableSize(bytes: number): string {
 }
 
 /**
+ * Strip anything that isn't a conservative safe-filename character, then
+ * strip leading dots (hidden files / traversal remnants like ".."). Shared
+ * by both sanitizeAttachmentFilename call sites below — the cleaned
+ * filename and the attachmentId-derived fallback stem — so the two paths
+ * can never drift apart. Keep this leading-dot strip if you touch it: the
+ * defense-in-depth path check in email_get_attachment's execute() relies on
+ * it (see the comment there) to route literal ".." / "." filenames into the
+ * attachment-<id> fallback instead of ever reaching the write.
+ */
+function sanitizeNameToken(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "");
+}
+
+/**
  * Attachment filenames are attacker-controlled — the email sender picks
  * them, not the agent — so we SANITIZE rather than reject (unlike
  * odoo_attach_file's isSafeFilename, which rejects because there the agent
@@ -62,16 +76,11 @@ function sanitizeAttachmentFilename(
   mimeType: string | undefined,
 ): string {
   const base = basename((rawFilename ?? "").trim().replace(/\\/g, "/"));
-  // Strip anything that isn't a conservative safe-filename character, then
-  // strip leading dots (hidden files / traversal remnants like "..").
-  const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "");
+  const cleaned = sanitizeNameToken(base);
 
   if (cleaned.length > 0) return cleaned;
 
-  const shortId = attachmentId
-    .replace(/[^a-zA-Z0-9._-]/g, "_")
-    .replace(/^\.+/, "")
-    .slice(0, 16);
+  const shortId = sanitizeNameToken(attachmentId).slice(0, 16);
   const suffix = shortId.length > 0 ? shortId : "unknown";
   return `attachment-${suffix}${extensionForMimeType(mimeType)}`;
 }
@@ -592,6 +601,26 @@ const plugin = {
             try {
               if (!checkPermission(config.permissions, "email", "read")) {
                 return permissionDenied("read");
+              }
+
+              // email_search used to take a raw Gmail-style `query` string.
+              // It was replaced by the structured DSL fields below, but the
+              // JSON schema doesn't declare additionalProperties:false and
+              // nothing else in the handler catches a caller still passing
+              // `query` — the value would silently be dropped and the
+              // adapter would throw a generic "search requires at least one
+              // filter field" that never mentions `query`. Guard for it here
+              // so the model gets an error it can act on. If `query` and
+              // valid DSL fields are both present, treat it as ambiguous
+              // intent and reject rather than guess.
+              if (typeof params.query === "string" && params.query.length > 0) {
+                return errorResult(
+                  new Error(
+                    "The `query` parameter was removed. email_search now uses structured " +
+                      "fields instead of a raw query string: from, to, subject, unread, " +
+                      "sinceDays, folder, limit. Re-issue the call using those fields.",
+                  ),
+                );
               }
 
               const result = await withAuthRetry(agentId, config, (adapter) =>

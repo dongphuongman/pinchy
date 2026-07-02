@@ -803,6 +803,63 @@ describe("email_search", () => {
       limit: 5,
     });
   });
+
+  // REGRESSION (#328 follow-up): email_search used to accept a raw Gmail
+  // `query` string. It was replaced by structured DSL fields, but nothing
+  // guarded the handler against a caller still passing the old `query` —
+  // the value was silently dropped and the adapter threw a generic "search
+  // requires at least one filter field" that never mentioned `query`. The
+  // handler must catch this before it ever reaches the adapter and name the
+  // replacement fields so the model can self-correct.
+  it("rejects the legacy `query` parameter with a descriptive error naming the replacement DSL fields", async () => {
+    const tools = createApi();
+    const tool = findTool(tools, "email_search", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      query: "from:alice subject:invoice",
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("query");
+    expect(text).toContain("from");
+    expect(text).toContain("to");
+    expect(text).toContain("subject");
+    expect(text).toContain("unread");
+    expect(text).toContain("sinceDays");
+    expect(text).toContain("folder");
+    expect(text).toContain("limit");
+    // The adapter must never be reached — the guard fires before the call.
+    expect(mockSearch).not.toHaveBeenCalled();
+  });
+
+  it("rejects `query` even when valid DSL fields are also present (ambiguous intent)", async () => {
+    const tools = createApi();
+    const tool = findTool(tools, "email_search", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      query: "from:alice",
+      from: "alice@test.com",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("query");
+    expect(mockSearch).not.toHaveBeenCalled();
+  });
+
+  it("ignores an empty-string `query` and still runs the DSL search unchanged", async () => {
+    mockSearch.mockResolvedValue([]);
+    const tools = createApi();
+    const tool = findTool(tools, "email_search", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      query: "",
+      subject: "invoice",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockSearch).toHaveBeenCalledWith({ subject: "invoice" });
+  });
 });
 
 describe("email_draft", () => {
