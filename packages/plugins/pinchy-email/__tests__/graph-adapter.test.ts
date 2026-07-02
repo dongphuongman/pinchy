@@ -563,7 +563,6 @@ describe("GraphAdapter.send", () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
-      headers: { get: () => null },
       json: async () => ({}),
     });
     await adapter.send({
@@ -581,7 +580,6 @@ describe("GraphAdapter.send", () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
-      headers: { get: () => null },
       json: async () => ({}),
     });
     const result = await adapter.send({
@@ -599,7 +597,6 @@ describe("GraphAdapter.send", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({}) })
       .mockResolvedValueOnce({
         ok: true,
-        headers: { get: () => null },
         json: async () => ({}),
       });
     await adapter.send({
@@ -624,7 +621,6 @@ describe("GraphAdapter.send", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({}) })
       .mockResolvedValueOnce({
         ok: true,
-        headers: { get: () => null },
         json: async () => ({}),
       });
     const result = await adapter.send({
