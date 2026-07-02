@@ -13,8 +13,8 @@ The setup has two parts: registering an app in Azure (one-time), then connecting
   **One app, many mailboxes.** You register the Azure app (Client ID, Secret,
   and optional Tenant ID) **once**, then connect as many Microsoft 365 mailboxes
   as you like through it. The app and the mailboxes have separate lifecycles —
-  you manage the app in the **Connected apps** section and each mailbox in the
-  **Integrations** list below it. See [Connect
+  you manage the app in the **Connected apps** section, below the
+  **Integrations** list where each mailbox appears. See [Connect
   Email](/guides/connect-email/#the-app-and-the-mailboxes-are-two-different-things)
   for the overview.
 </Aside>
@@ -110,7 +110,7 @@ You'll need both in the next part.
 
     Paste the **Client ID** and **Client Secret** from Part 1.
 
-    Optionally paste the **Tenant ID**. Leave it blank to allow any work or school account — enter your tenant ID to restrict access to your organization only.
+    Optionally paste the **Tenant ID**. Leave it blank to allow any work or school account — Pinchy uses Microsoft's `organizations` endpoint by default, which does not accept personal Microsoft accounts. Enter your tenant ID to restrict access to your organization only, or enter `common` to also allow personal Outlook.com accounts to connect (only relevant if your app registration's **Supported account types** includes personal Microsoft accounts — see [1.1](#11-create-the-app-registration)).
 
     Click **Save & Continue**.
 
@@ -132,7 +132,7 @@ For subsequent Microsoft connections (a second mailbox), the credentials step is
 
 ## Managing the app later
 
-The Azure app you registered in Part 1 lives in the **Connected apps** section at the top of **Settings → Integrations**. You can update or reset it at any time — the app and the connected mailboxes are managed separately.
+The Azure app you registered in Part 1 lives in the **Connected apps** section of **Settings → Integrations**, below the list of connected mailboxes. You can update or reset it at any time — the app and the connected mailboxes are managed separately.
 
 <Aside type="note">
   Earlier versions of Pinchy had no way to change the Microsoft app details
@@ -143,11 +143,11 @@ The Azure app you registered in Part 1 lives in the **Connected apps** section a
 
 ### Edit the app credentials
 
-Click **Edit** on the Microsoft row to update the Client ID, Client Secret, or Tenant ID. The Client ID and Tenant ID stay pre-filled; the Client Secret field is empty and left unchanged unless you type a new one. Changes apply to every Microsoft 365 mailbox connected through this app.
+Click **Edit** on the Microsoft row to update the Client ID, Client Secret, or Tenant ID. The Client ID and Tenant ID stay pre-filled; the Client Secret is never displayed and must be pasted before you can save — enter the new secret (or re-enter the current one if you're only changing the Client ID or Tenant ID). Changes apply to every Microsoft 365 mailbox connected through this app.
 
 ### Rotate the client secret before it expires
 
-Azure client secrets have a **hard maximum lifetime of 24 months** — Microsoft won't let you create a longer-lived one. When a secret expires, Pinchy can no longer refresh tokens and every mailbox stops working. Plan the rotation ahead of the expiry date:
+The Azure portal caps client secrets at **24 months** — you can't create a longer-lived one there. When a secret expires, Pinchy can no longer refresh tokens and every mailbox stops working. Plan the rotation ahead of the expiry date:
 
 1. In Azure, create a new client secret under **Certificates & secrets** (see [Part 1, step 1.3](#13-create-a-client-secret)).
 2. In Pinchy, click **Edit** on the Microsoft row and paste the new secret's **Value**.
@@ -173,6 +173,11 @@ Click **Reset** on the Microsoft row to clear the stored credentials entirely. T
 
 A connection alone doesn't give any agent access. You must explicitly grant permissions per agent.
 
+<Aside type="note">
+  Only **shared** agents have a **Permissions** tab. Personal agents can't be
+  granted integration access — email permissions are a shared-agent feature.
+</Aside>
+
 <Steps>
 
 1.  Open the agent you want to connect to email
@@ -183,7 +188,7 @@ A connection alone doesn't give any agent access. You must explicitly grant perm
     - **Create drafts** — create draft emails (saved but not sent)
     - **Send messages** — send emails immediately (cannot be undone)
 
-5.  Click **Save**
+5.  Click **Save & Restart** and confirm. Permission changes restart the agent runtime, so active chats are briefly disconnected.
 
 </Steps>
 
@@ -212,12 +217,19 @@ When email permissions are granted, the agent gets access to these tools:
 
 | Tool                   | Permission required | Description                                                                                                                                                                       |
 | ---------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `email_list`           | Read                | List emails from a folder (INBOX, SENT, DRAFTS). Supports filtering by read status.                                                                                               |
+| `email_list`           | Read                | List emails from a folder (INBOX, SENT, DRAFTS, TRASH, SPAM; defaults to INBOX). Supports filtering by read status.                                                               |
 | `email_read`           | Read                | Read the full content of a specific email by ID. Lists any attachments with their IDs.                                                                                            |
 | `email_get_attachment` | Read                | Download an email attachment into the agent's workspace.                                                                                                                          |
 | `email_search`         | Read                | Search emails using structured fields: `from`, `to`, `subject`, `unread`, `sinceDays`, `folder`, `limit` (e.g. `{ from: "user@example.com", subject: "invoice", sinceDays: 7 }`). |
 | `email_draft`          | Draft               | Create a draft email. Can also create reply drafts with `replyTo`.                                                                                                                |
 | `email_send`           | Send                | Send an email immediately. Can also send replies with `replyTo`.                                                                                                                  |
+
+<Aside type="note">
+  Microsoft Graph's direct-send endpoint doesn't return a message ID — only
+  reply sends do. When `email_send` sends a brand-new message (no `replyTo`),
+  the agent confirms the send succeeded but can't quote an ID for it. This is
+  expected Graph API behavior, not an error.
+</Aside>
 
 ---
 
@@ -227,9 +239,9 @@ Microsoft access tokens expire after about one hour. Pinchy automatically refres
 
 Microsoft rotates refresh tokens on every use. Pinchy handles this automatically. If you see repeated sign-in prompts, verify that your app registration has `offline_access` granted and that admin consent was given.
 
-If a refresh fails permanently — the account revoked access, or the client secret expired — the mailbox's card in **Settings → Integrations** switches to a red **"Authentication failed"** state. Open the mailbox's `…` menu and click **Reconnect** to restart the Microsoft sign-in flow. The mailbox keeps its existing agent permissions.
+If a refresh fails permanently — the account revoked access, or the client secret expired — the mailbox's card in **Settings → Integrations** switches to a red **"Authentication failed"** state. Open the mailbox's `…` menu, click **Reconnect**, then **Reconnect via Microsoft** in the dialog to restart the Microsoft sign-in flow. The mailbox keeps its existing agent permissions.
 
-If the failure was caused by an **expired client secret**, fix the app first: rotate the secret in the **Connected apps** section (see [Rotate the client secret before it expires](#rotate-the-client-secret-before-it-expires)), then reconnect the affected mailboxes.
+If the failure was caused by an **expired client secret**, rotating the secret in the **Connected apps** section (see [Rotate the client secret before it expires](#rotate-the-client-secret-before-it-expires)) is enough for agents to resume on their next call — you don't need to reconnect every mailbox. A mailbox that already flipped to **"Authentication failed"**, however, keeps showing that red badge until you clear it explicitly: click **Test Connection** (or **Reconnect**) on that mailbox's `…` menu.
 
 ---
 
@@ -249,7 +261,13 @@ The Client ID is incorrect or belongs to a different tenant. Double-check that y
 
 **Client secret expired**
 
-Azure client secrets have a finite lifetime (24 months maximum). When a secret expires, Pinchy can no longer refresh tokens. Create a new client secret in Azure, then click **Edit** on the Microsoft row in the **Connected apps** section to paste the new **Value**. Because you're only rotating the secret, connected mailboxes stay attached and resume working. See [Rotate the client secret before it expires](#rotate-the-client-secret-before-it-expires).
+Azure client secrets have a finite lifetime (24 months maximum). When a secret expires, Pinchy can no longer refresh tokens. Create a new client secret in Azure, then click **Edit** on the Microsoft row in the **Connected apps** section to paste the new **Value**. Because you're only rotating the secret, connected mailboxes stay attached and agents resume working on their next call — you don't need to reconnect them. See [Rotate the client secret before it expires](#rotate-the-client-secret-before-it-expires).
+
+If a mailbox already flipped to the red **"Authentication failed"** badge before you rotated the secret, that badge doesn't clear on its own — click **Test Connection** (or **Reconnect**) on that mailbox's `…` menu to clear it once the new secret is in place.
+
+**Microsoft OAuth settings missing**
+
+If an admin resets or deletes the Microsoft OAuth app in **Connected apps** while mailboxes are still connected through it, agents fail with `Microsoft OAuth settings missing — reconnect the mailbox or restore the OAuth app` the next time their access token needs to refresh, and the mailbox flips to the red **"Authentication failed"** state. Recover by re-entering the app credentials in **Connected apps** (restoring the same Client ID/Secret re-enables existing refresh tokens) or by reconnecting the affected mailbox.
 
 ---
 

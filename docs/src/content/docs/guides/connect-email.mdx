@@ -25,16 +25,33 @@ You set up and manage the app and the mailboxes in different places:
 
 The app keeps existing even after you remove its last mailbox — it has an independent lifecycle, so it stays visible in **Connected apps** with zero mailboxes attached. To clear the credentials, reset the app explicitly.
 
+Each agent works with exactly one mailbox — the one you pick in **Permissions → Email** on the agent's settings. If you've connected several mailboxes, grant each agent the one it should use; you can't grant a single agent access to more than one mailbox, so a team that needs several mailboxes handled needs one agent per mailbox.
+
 For the full picture of how connections, apps, and per-agent permissions fit together, see [Integrations](/concepts/integrations/).
 
 ## Agents can work with attachments
 
 An agent with read access can also download an email's attachments into its own workspace — for example, saving an invoice PDF so it can read it and then file it on the matching record in Odoo. This uses the same read permission as listing and searching email; there's nothing extra to configure.
 
+A few operational details worth knowing:
+
+- **Size cap**: attachments over 25 MB are rejected — the same cap `odoo_attach_file` uses, so anything the agent downloads here is always small enough to hand off downstream.
+- **Filename sanitization**: the sender picks the attachment's original filename, so Pinchy sanitizes it before saving (stripping path separators and unsafe characters) rather than trusting it outright.
+- **Collision handling**: if a file with that name already exists in the agent's workspace, Pinchy appends `-1`, `-2`, and so on rather than overwriting anything.
+- **Use the returned filename**: because sanitization or a collision suffix can change the name, always use the filename the tool actually returns — not the original attachment name — for any hand-off to another tool, such as `odoo_attach_file`.
+
 ## Agents know their own mailbox
 
 An agent with email permissions automatically knows which mailbox it works with: the connected email address, the connection's name in Pinchy, and the operations you granted. Ask your agent which address it sends from and it can just answer — no extra setup needed. On shared agents, that identity is always the connected mailbox itself, not the personal address of whoever is chatting.
 
-## Email agent templates use the `email` skill
+## Email agent templates
 
-The **Email Assistant**, **Sales Email Assistant**, and **Support Email Assistant** templates attach the `email` skill — a workflow guide that teaches the agent when to list, search, or read messages, and how to draft a reply instead of assuming it can send. Sending stays gated behind the separate `email_send` permission regardless of the skill. This works the same way as the `web-search` skill used by the [Market & News Monitor](/guides/create-market-monitor-agent/) template.
+Pinchy ships three email agent templates: **Email Assistant**, **Sales Email Assistant**, and **Support Email Assistant**. All three need a connected mailbox to work with, so they only appear as available templates once you've connected at least one Gmail or Microsoft 365 mailbox — before that, they're listed but grayed out with a link back to **Settings → Integrations**.
+
+When you create an agent from one of these templates, the **New Agent** form asks you to pick a **Mailbox**. If you have only one mailbox connected, it's selected automatically; with several, you choose which one this agent should use.
+
+All three templates grant the same permissions: **Read messages** and **Create drafts** — enough to list, search, and read email (including downloading attachments, which uses the read permission) and draft replies. None of them grant **Send messages**; sending stays an explicit, separate grant you add afterward in **Agent Settings → Permissions** if you want it.
+
+### The `email` skill
+
+The email templates also attach the `email` skill — a workflow guide that teaches the agent when to list, search, or read messages, and how to draft a reply instead of assuming it can send. Sending stays gated behind the separate `email_send` permission regardless of the skill. This works the same way as the `web-search` skill used by the [Market & News Monitor](/guides/create-market-monitor-agent/) template.

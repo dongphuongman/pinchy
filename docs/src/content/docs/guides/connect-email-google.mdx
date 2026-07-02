@@ -13,8 +13,8 @@ The setup has two parts: creating an OAuth app in Google Cloud (one-time), then 
   **One app, many mailboxes.** You register the Google OAuth app (Client ID and
   Secret) **once**, then connect as many Gmail mailboxes as you like through it.
   The app and the mailboxes have separate lifecycles — you manage the app in the
-  **Connected apps** section and each mailbox in the **Integrations** list below
-  it. See [Connect
+  **Connected apps** section, below the **Integrations** list where each mailbox
+  appears. See [Connect
   Email](/guides/connect-email/#the-app-and-the-mailboxes-are-two-different-things)
   for the overview.
 </Aside>
@@ -154,11 +154,11 @@ For subsequent Google connections (a second Gmail mailbox), the OAuth credential
 
 ## Managing the app later
 
-The Google OAuth app you set up in Part 1 lives in the **Connected apps** section at the top of **Settings → Integrations**. You can update or reset it at any time — the app and the connected mailboxes are managed separately.
+The Google OAuth app you set up in Part 1 lives in the **Connected apps** section of **Settings → Integrations**, below the list of connected mailboxes. You can update or reset it at any time — the app and the connected mailboxes are managed separately.
 
 ### Edit the app credentials
 
-Click **Edit** on the Google row to update the Client ID or Client Secret. The Client ID stays pre-filled; the Client Secret field is empty and left unchanged unless you type a new one. Changes apply to every Gmail mailbox connected through this app.
+Click **Edit** on the Google row to update the Client ID or Client Secret. The Client ID stays pre-filled; the Client Secret field starts empty and must be filled in before you can save — enter the new secret (or re-enter the current one if you're only changing the Client ID). Changes apply to every Gmail mailbox connected through this app.
 
 ### Rotate the client secret
 
@@ -191,6 +191,11 @@ Click **Reset** on the Google row to clear the stored credentials entirely. This
 
 A connection alone doesn't give any agent access. You must explicitly grant permissions per agent.
 
+<Aside type="note">
+  Only **shared** agents have a **Permissions** tab. Personal agents can't be
+  granted integration access — email permissions are a shared-agent feature.
+</Aside>
+
 <Steps>
 
 1.  Open the agent you want to connect to email
@@ -201,7 +206,7 @@ A connection alone doesn't give any agent access. You must explicitly grant perm
     - **Create drafts** — create draft emails (saved but not sent)
     - **Send messages** — send emails immediately (cannot be undone)
 
-5.  Click **Save**
+5.  Click **Save & Restart** and confirm. Permission changes restart the agent runtime, so active chats are briefly disconnected.
 
 </Steps>
 
@@ -244,7 +249,7 @@ When email permissions are granted, the agent gets access to these tools:
 
 | Tool                   | Permission required | Description                                                                                                                                                                       |
 | ---------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `email_list`           | Read                | List emails from a folder (INBOX, SENT, DRAFTS). Supports filtering by read status.                                                                                               |
+| `email_list`           | Read                | List emails from a folder (INBOX, SENT, DRAFTS, TRASH, SPAM; defaults to INBOX). Supports filtering by read status.                                                               |
 | `email_read`           | Read                | Read the full content of a specific email by ID. Lists any attachments with their IDs.                                                                                            |
 | `email_get_attachment` | Read                | Download an email attachment into the agent's workspace.                                                                                                                          |
 | `email_search`         | Read                | Search emails using structured fields: `from`, `to`, `subject`, `unread`, `sinceDays`, `folder`, `limit` (e.g. `{ from: "user@example.com", subject: "invoice", sinceDays: 7 }`). |
@@ -259,7 +264,7 @@ Google access tokens expire after about one hour. Pinchy automatically refreshes
 
 If a refresh fails permanently — the Google account revoked access, the refresh token expired after 7 days in Testing mode, or an unused token lapsed after 6 months — the mailbox's card in **Settings → Integrations** switches to a red **"Authentication failed"** state.
 
-To recover, open the mailbox's `…` menu and click **Reconnect**. This restarts the Google sign-in flow for that mailbox and keeps its existing agent permissions attached — you don't have to re-grant anything.
+To recover, open the mailbox's `…` menu, click **Reconnect**, then **Reconnect via Google** in the dialog. This restarts the Google sign-in flow for that mailbox and keeps its existing agent permissions attached — you don't have to re-grant anything.
 
 ---
 
