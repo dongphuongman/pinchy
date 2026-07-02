@@ -40,6 +40,40 @@ function errorRedirect(origin: string, error: string) {
   return NextResponse.redirect(url.toString(), 302);
 }
 
+/**
+ * Resolve which provider a callback belongs to when there is no live pending
+ * row (fresh-connect flow already exhausted its pending-row lookup, or this
+ * is a reconnect which never creates one).
+ *
+ * For reconnects, the state param carries `reconnectConnectionId`. That
+ * connection row's `type` column is the source of truth for which provider
+ * this callback is for — it can't drift or get dropped in transit the way a
+ * cookie can. Google's reconnect flow relies on this path exclusively (it
+ * never sets `oauth_provider`); Microsoft's reconnect flow also sets the
+ * cookie as a second signal, but if that cookie is lost this DB lookup is
+ * what keeps a Microsoft callback from being exchanged against Google's
+ * token endpoint.
+ *
+ * Falls back to the `oauth_provider` cookie, then to "google" as the
+ * last-resort legacy default, matching the pre-existing cascade.
+ */
+async function resolveProviderFallback(
+  reconnectConnectionId: string | undefined,
+  providerCookie: string | undefined
+): Promise<string> {
+  if (reconnectConnectionId) {
+    const [reconnectRow] = await db
+      .select()
+      .from(integrationConnections)
+      .where(eq(integrationConnections.id, reconnectConnectionId))
+      .limit(1);
+    if (reconnectRow) {
+      return reconnectRow.type;
+    }
+  }
+  return providerCookie ?? "google";
+}
+
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
   const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0].trim();
@@ -74,8 +108,18 @@ export async function GET(request: Request) {
     return errorRedirect(origin, "state_mismatch");
   }
 
-  // 4. Determine provider from pending connection (set during oauth/start)
+  // 4. Determine provider. Precedence:
+  //    a) pending connection row (set during oauth/start GET — fresh connect flow)
+  //    b) reconnect connection row (state carries reconnectConnectionId — the
+  //       DB row's `type` is the source of truth, not the oauth_provider
+  //       cookie, since Google reconnect never sets that cookie and any
+  //       reconnect's cookie can be dropped in transit)
+  //    c) oauth_provider cookie (legacy fallback)
+  //    d) "google" (last-resort legacy default)
   const pendingId = cookies["oauth_pending_id"];
+  const statePayloadForProviderLookup = decodeStatePayload(state);
+  const reconnectConnectionIdForProviderLookup =
+    statePayloadForProviderLookup?.reconnectConnectionId;
   // Assigned on every path below; no initializer so TS definite-assignment
   // analysis (and CodeQL) verify that instead of masking a missed branch.
   let pendingType: string;
@@ -90,13 +134,16 @@ export async function GET(request: Request) {
     if (pendingRows.length > 0) {
       pendingType = pendingRows[0].type;
     } else {
-      // Pending record gone (expired/cleaned up) — fall back to the provider
-      // cookie set by oauth/start so we still know which provider was used.
-      pendingType = cookies["oauth_provider"] ?? "google";
+      pendingType = await resolveProviderFallback(
+        reconnectConnectionIdForProviderLookup,
+        cookies["oauth_provider"]
+      );
     }
   } else {
-    // No pending ID at all — fall back to the provider cookie.
-    pendingType = cookies["oauth_provider"] ?? "google";
+    pendingType = await resolveProviderFallback(
+      reconnectConnectionIdForProviderLookup,
+      cookies["oauth_provider"]
+    );
   }
 
   // Resolve the descriptor; fail-safe to Google (matches the pendingType

@@ -1078,4 +1078,107 @@ describe("GET /api/integrations/oauth/callback", () => {
       expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
     });
   });
+
+  describe("reconnect flow — Microsoft, oauth_provider cookie lost", () => {
+    // Build a state param that encodes reconnectConnectionId (as POST /oauth/start would)
+    function buildReconnectState(reconnectConnectionId: string) {
+      const stateObj = {
+        nonce: "test-nonce-ms-456",
+        reconnectConnectionId,
+      };
+      return Buffer.from(JSON.stringify(stateObj)).toString("base64url");
+    }
+
+    const MS_RECONNECT_STATE = buildReconnectState("existing-ms-conn-id");
+
+    const mockExistingMsConnection = {
+      id: "existing-ms-conn-id",
+      type: "microsoft",
+      name: "user@contoso.com",
+      description: "",
+      credentials: "encrypted-old-creds",
+      data: { emailAddress: "user@contoso.com", provider: "outlook" },
+      status: "auth_failed",
+      createdAt: new Date("2026-04-01"),
+      updatedAt: new Date("2026-04-01"),
+    };
+
+    function mockMsTokenExchange() {
+      return {
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          access_token: "ms-access-token",
+          refresh_token: "ms-refresh-token",
+          expires_in: 3600,
+          scope: "offline_access User.Read Mail.ReadWrite Mail.Send",
+        }),
+      };
+    }
+
+    function mockMsProfileFetch() {
+      return {
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          mail: "user@contoso.com",
+          userPrincipalName: "user@contoso.com",
+        }),
+      };
+    }
+
+    beforeEach(() => {
+      mockGetSession.mockResolvedValue(adminSession());
+      mockGetOAuthSettings.mockResolvedValue({
+        clientId: "ms-client-id",
+        clientSecret: "ms-client-secret",
+        tenantId: "my-tenant",
+      });
+      // The reconnectConnectionId in state must resolve the provider from the
+      // DB row's type — this is the SELECT the callback issues to look up
+      // that row (distinct from the pending-record SELECT used elsewhere).
+      mockSelectLimit.mockResolvedValue([mockExistingMsConnection]);
+      mockUpdateReturning.mockResolvedValue([mockExistingMsConnection]);
+    });
+
+    it("exchanges the code against the Microsoft token endpoint, not Google's, even without the oauth_provider cookie", async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockMsTokenExchange())
+        .mockResolvedValueOnce(mockMsProfileFetch());
+
+      // No oauth_provider cookie — only oauth_state, as the reconnect flow
+      // never set one for this connection (or it was dropped in transit).
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: MS_RECONNECT_STATE },
+          `oauth_state=${MS_RECONNECT_STATE}`
+        )
+      );
+
+      expect(mockGetOAuthSettings).toHaveBeenCalledWith("microsoft");
+      const tokenCall = mockFetch.mock.calls[0];
+      expect(tokenCall[0]).toBe("https://login.microsoftonline.com/my-tenant/oauth2/v2.0/token");
+    });
+
+    it("includes the resolved provider in the token-exchange-failure audit detail", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        json: vi.fn().mockResolvedValue({ error: "invalid_grant" }),
+      });
+
+      await GET(
+        makeRequest(
+          { code: "bad-code", state: MS_RECONNECT_STATE },
+          `oauth_state=${MS_RECONNECT_STATE}`
+        )
+      );
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: "failure",
+          detail: expect.objectContaining({
+            type: "microsoft",
+          }),
+        })
+      );
+    });
+  });
 });
