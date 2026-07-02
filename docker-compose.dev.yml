@@ -38,6 +38,26 @@ services:
       - ./packages/plugins/pinchy-email:/root/.openclaw/extensions/pinchy-email
       - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
       - ./sample-data:/data/sample-docs
+      # Shadow volumes: mounted ON TOP of the node_modules path of the four
+      # plugins that have baked /opt/<plugin>-deps bundles (pinchy-files,
+      # pinchy-odoo, pinchy-web, pinchy-email — see Dockerfile.openclaw).
+      # Without these, node_modules lives INSIDE the host bind mount above,
+      # so container-installed deps (googleapis, odoo-node, mammoth, pdf-lib,
+      # ...) and the host's pnpm symlink farm fight over the same host
+      # directory: start-openclaw.sh's install_plugin_deps wipes the host's
+      # pnpm symlinks on every container start, and a host `pnpm install` in
+      # turn writes host-only symlinks that don't resolve inside Linux,
+      # breaking plugin load ("Cannot find module"). A named volume here
+      # keeps the container's node_modules physically separate from the
+      # host's, so config/install-plugin-deps.sh (mountpoint-safe — see its
+      # header comment) and host `pnpm install` stop clobbering each other.
+      # context/audit/transcript/docs are intentionally excluded: they have
+      # no /opt/*-deps bundle, so their (host-managed) node_modules must stay
+      # visible through the bind mount above.
+      - dev-pinchy-files-node-modules:/root/.openclaw/extensions/pinchy-files/node_modules
+      - dev-pinchy-odoo-node-modules:/root/.openclaw/extensions/pinchy-odoo/node_modules
+      - dev-pinchy-web-node-modules:/root/.openclaw/extensions/pinchy-web/node_modules
+      - dev-pinchy-email-node-modules:/root/.openclaw/extensions/pinchy-email/node_modules
   db:
     environment:
       - POSTGRES_PASSWORD=pinchy_dev
@@ -55,3 +75,7 @@ services:
 
 volumes:
   caddy_data_dev:
+  dev-pinchy-files-node-modules:
+  dev-pinchy-odoo-node-modules:
+  dev-pinchy-web-node-modules:
+  dev-pinchy-email-node-modules:

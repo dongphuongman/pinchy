@@ -55,28 +55,16 @@ ensure_secrets_root_owned() {
     echo "[secrets-fix] $SECRETS_FILE: $before -> $after"
 }
 
-# Install pinchy-files plugin dependencies from the container image.
-# In dev mode, source files are volume-mounted from the host, but host
-# node_modules contain macOS native bindings that won't work in Linux.
-# This runs before every gateway start (including restarts after config changes).
-install_plugin_deps() {
-    if [ -d /opt/pinchy-files-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-files ]; then
-        rm -rf /root/.openclaw/extensions/pinchy-files/node_modules
-        cp -r /opt/pinchy-files-deps/node_modules /root/.openclaw/extensions/pinchy-files/node_modules
-    fi
-    if [ -d /opt/pinchy-odoo-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-odoo ]; then
-        rm -rf /root/.openclaw/extensions/pinchy-odoo/node_modules
-        cp -r /opt/pinchy-odoo-deps/node_modules /root/.openclaw/extensions/pinchy-odoo/node_modules
-    fi
-    if [ -d /opt/pinchy-web-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-web ]; then
-        rm -rf /root/.openclaw/extensions/pinchy-web/node_modules
-        cp -r /opt/pinchy-web-deps/node_modules /root/.openclaw/extensions/pinchy-web/node_modules
-    fi
-    if [ -d /opt/pinchy-email-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-email ]; then
-        rm -rf /root/.openclaw/extensions/pinchy-email/node_modules
-        cp -r /opt/pinchy-email-deps/node_modules /root/.openclaw/extensions/pinchy-email/node_modules
-    fi
-}
+# Install pinchy-{files,odoo,web,email} plugin runtime dependencies from the
+# container image. In dev mode, source files are volume-mounted from the
+# host, but host node_modules contain macOS native bindings that won't work
+# in Linux. Extracted to config/install-plugin-deps.sh (same pattern as
+# sync-plugins.sh) so its mountpoint-safety invariant is unit-testable — see
+# packages/web/src/__tests__/lib/install-plugin-deps.test.ts. Runs before
+# every gateway start (including restarts after config changes), defining
+# install_plugin_deps() into this shell.
+# shellcheck source=install-plugin-deps.sh
+source /install-plugin-deps.sh
 
 # Fix plugin ownership — bind-mounted plugin files from the host may have
 # a different UID than root, causing OpenClaw to block them as "suspicious".
