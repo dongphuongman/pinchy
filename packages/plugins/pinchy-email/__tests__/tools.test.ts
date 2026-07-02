@@ -7,6 +7,7 @@ const mockRead = vi.fn();
 const mockSearch = vi.fn();
 const mockDraft = vi.fn();
 const mockSend = vi.fn();
+const mockGetAttachment = vi.fn();
 
 vi.mock("../gmail-adapter", () => {
   const MockGmailAdapter = vi.fn(function (this: Record<string, unknown>) {
@@ -15,6 +16,7 @@ vi.mock("../gmail-adapter", () => {
     this.search = mockSearch;
     this.draft = mockDraft;
     this.send = mockSend;
+    this.getAttachment = mockGetAttachment;
   });
   return { GmailAdapter: MockGmailAdapter };
 });
@@ -26,9 +28,25 @@ vi.mock("../graph-adapter", () => {
     this.search = mockSearch;
     this.draft = mockDraft;
     this.send = mockSend;
+    this.getAttachment = mockGetAttachment;
   });
   return { GraphAdapter: MockGraphAdapter };
 });
+
+// Mock node:fs/promises so attachment writes never touch the real filesystem.
+// vi.mock(...) is hoisted above these const declarations, so the mock fns
+// themselves must be created via vi.hoisted() to avoid a TDZ error.
+const { mockMkdir, mockWriteFile, mockAccess } = vi.hoisted(() => ({
+  mockMkdir: vi.fn(),
+  mockWriteFile: vi.fn(),
+  mockAccess: vi.fn(),
+}));
+
+vi.mock("node:fs/promises", () => ({
+  mkdir: mockMkdir,
+  writeFile: mockWriteFile,
+  access: mockAccess,
+}));
 
 import { GmailAdapter } from "../gmail-adapter";
 import { GraphAdapter } from "../graph-adapter";
@@ -127,15 +145,16 @@ function mockCredentialFailure(
 }
 
 describe("tool registration", () => {
-  it("registers all 5 tools", () => {
+  it("registers all 6 tools", () => {
     const tools = createApi();
-    expect(tools).toHaveLength(5);
+    expect(tools).toHaveLength(6);
     const names = tools.map((t) => t.name);
     expect(names).toContain("email_list");
     expect(names).toContain("email_read");
     expect(names).toContain("email_search");
     expect(names).toContain("email_draft");
     expect(names).toContain("email_send");
+    expect(names).toContain("email_get_attachment");
   });
 
   it("returns a non-null stub for all tools when no agentId (OC probe call)", async () => {
@@ -353,7 +372,9 @@ describe("credential fetching", () => {
     const result = await tool.execute("call-1", {});
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("credentials API returned no type field");
+    expect(result.content[0].text).toContain(
+      "credentials API returned no type field",
+    );
     expect(mockList).not.toHaveBeenCalled();
   });
 
@@ -434,7 +455,9 @@ describe("credential fetching", () => {
     // a retry list call after cache invalidation. Total = 3.
     expect(mockList).toHaveBeenCalledTimes(3);
     // Second GmailAdapter instantiation must use the fresh token
-    expect(GmailAdapter).toHaveBeenLastCalledWith({ accessToken: "fresh-token" });
+    expect(GmailAdapter).toHaveBeenLastCalledWith({
+      accessToken: "fresh-token",
+    });
   });
 
   it("surfaces the auth error if the refetched token also fails", async () => {
@@ -560,6 +583,75 @@ describe("email_read", () => {
     expect(data.id).toBe("msg-1");
     expect(data.body).toBe("Full body");
     expect(mockRead).toHaveBeenCalledWith("msg-1");
+  });
+
+  it("does not add attachment guidance when the email has no attachments", async () => {
+    const email = {
+      id: "msg-1",
+      from: "a@test.com",
+      subject: "Hello",
+      body: "Full body",
+      attachments: [],
+    };
+    mockRead.mockResolvedValue(email);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_read", agentId)!;
+
+    const result = await tool.execute("call-1", { id: "msg-1" });
+
+    // Existing behavior preserved: exactly one JSON content block, still parseable.
+    expect(result.content).toHaveLength(1);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.id).toBe("msg-1");
+  });
+
+  it("appends attachment guidance pointing to email_get_attachment when attachments are present", async () => {
+    const email = {
+      id: "msg-1",
+      from: "a@test.com",
+      subject: "Hello",
+      body: "Full body",
+      attachments: [
+        {
+          id: "att-1",
+          filename: "invoice.pdf",
+          mimeType: "application/pdf",
+          size: 12345,
+        },
+        {
+          id: "att-2",
+          filename: "photo.png",
+          mimeType: "image/png",
+          size: 2048,
+        },
+      ],
+    };
+    mockRead.mockResolvedValue(email);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_read", agentId)!;
+
+    const result = await tool.execute("call-1", { id: "msg-1" });
+
+    // First block remains the untouched JSON payload.
+    const data = JSON.parse(result.content[0].text);
+    expect(data.id).toBe("msg-1");
+    expect(data.attachments).toHaveLength(2);
+
+    // Guidance is additive — a second block, not a restructure of the first.
+    expect(result.content.length).toBeGreaterThan(1);
+    const guidance = result.content
+      .slice(1)
+      .map((b) => b.text)
+      .join("\n");
+    expect(guidance).toContain("email_get_attachment");
+    expect(guidance).toContain("msg-1");
+    expect(guidance).toContain("att-1");
+    expect(guidance).toContain("invoice.pdf");
+    expect(guidance).toContain("application/pdf");
+    expect(guidance).toContain("att-2");
+    expect(guidance).toContain("photo.png");
   });
 });
 
@@ -715,5 +807,310 @@ describe("error handling", () => {
 
     expect(result.content[0].text).toContain("Unknown error");
     expect(result.isError).toBe(true);
+  });
+});
+
+describe("email_get_attachment", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCredentialResponse();
+    // Default: no filename collision (target path does not exist yet).
+    mockAccess.mockRejectedValue(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+    );
+    mockMkdir.mockResolvedValue(undefined);
+    mockWriteFile.mockResolvedValue(undefined);
+  });
+
+  it("is gated on email.read permission and never touches the filesystem when denied", async () => {
+    const configNoRead: PluginConfig = {
+      ...testConfig,
+      agents: {
+        "agent-1": {
+          connectionId: "conn-1",
+          permissions: { email: [] },
+        },
+      },
+    };
+    const tools = createApi(configNoRead);
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    expect(result.content[0].text).toContain("Permission denied");
+    expect(result.isError).toBe(true);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockGetAttachment).not.toHaveBeenCalled();
+    expect(mockMkdir).not.toHaveBeenCalled();
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it("downloads the attachment and writes it to the agent's uploads directory", async () => {
+    const data = Buffer.from("pdf-bytes-here");
+    mockGetAttachment.mockResolvedValue({
+      filename: "invoice.pdf",
+      mimeType: "application/pdf",
+      data,
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockGetAttachment).toHaveBeenCalledWith("msg-1", "att-1");
+    expect(mockMkdir).toHaveBeenCalledWith(
+      "/root/.openclaw/workspaces/agent-1/uploads",
+      { recursive: true },
+    );
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      "/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf",
+      data,
+    );
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.filename).toBe("invoice.pdf");
+    expect(payload.size).toBe(data.length);
+    expect(payload.mimeType).toBe("application/pdf");
+
+    // Guidance references the hand-off to odoo_attach_file and the written name.
+    const guidance = result.content
+      .slice(1)
+      .map((b) => b.text)
+      .join("\n");
+    expect(guidance).toContain("odoo_attach_file");
+    expect(guidance).toContain("invoice.pdf");
+  });
+
+  it("never includes attachment content/bytes in the tool result", async () => {
+    const data = Buffer.from("super-secret-binary-content");
+    mockGetAttachment.mockResolvedValue({
+      filename: "secret.bin",
+      mimeType: "application/octet-stream",
+      data,
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    const fullText = result.content.map((b) => b.text).join("\n");
+    expect(fullText).not.toContain("super-secret-binary-content");
+    expect(fullText).not.toContain(data.toString("base64"));
+  });
+
+  it("sanitizes a path-traversal filename (POSIX) so the write stays inside uploads/", async () => {
+    mockGetAttachment.mockResolvedValue({
+      filename: "../../etc/passwd",
+      mimeType: "text/plain",
+      data: Buffer.from("x"),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [writtenPath] = mockWriteFile.mock.calls[0] as [string, Buffer];
+    expect(
+      writtenPath.startsWith("/root/.openclaw/workspaces/agent-1/uploads/"),
+    ).toBe(true);
+    expect(writtenPath).not.toContain("..");
+    expect(writtenPath).not.toContain("/etc/passwd");
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.filename).not.toContain("/");
+    expect(payload.filename).not.toContain("\\");
+    expect(payload.filename).not.toContain("..");
+  });
+
+  it("sanitizes a path-traversal filename (Windows-style backslashes)", async () => {
+    mockGetAttachment.mockResolvedValue({
+      filename: "..\\..\\evil.pdf",
+      mimeType: "application/pdf",
+      data: Buffer.from("x"),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [writtenPath] = mockWriteFile.mock.calls[0] as [string, Buffer];
+    expect(
+      writtenPath.startsWith("/root/.openclaw/workspaces/agent-1/uploads/"),
+    ).toBe(true);
+    expect(writtenPath).not.toContain("\\");
+    expect(writtenPath).not.toContain("..");
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.filename).not.toContain("\\");
+    expect(payload.filename).not.toContain("..");
+  });
+
+  it("falls back to a generated name for an empty filename, using the mime type for the extension", async () => {
+    mockGetAttachment.mockResolvedValue({
+      filename: "",
+      mimeType: "application/pdf",
+      data: Buffer.from("x"),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-12345",
+    });
+
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.filename).toMatch(/^attachment-.+\.pdf$/);
+  });
+
+  it("falls back to a .bin extension for an unrecognized mime type with an empty filename", async () => {
+    mockGetAttachment.mockResolvedValue({
+      filename: "   ",
+      mimeType: "application/x-mystery",
+      data: Buffer.from("x"),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-99999",
+    });
+
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.filename).toMatch(/^attachment-.+\.bin$/);
+  });
+
+  it("appends a numeric suffix on filename collision instead of overwriting", async () => {
+    // First access() check (invoice.pdf) resolves => file exists => collision.
+    // Second access() check (invoice-1.pdf) rejects ENOENT => free name.
+    mockAccess
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(
+        Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+      );
+    mockGetAttachment.mockResolvedValue({
+      filename: "invoice.pdf",
+      mimeType: "application/pdf",
+      data: Buffer.from("x"),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.filename).toBe("invoice-1.pdf");
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      "/root/.openclaw/workspaces/agent-1/uploads/invoice-1.pdf",
+      expect.anything(),
+    );
+    // Never overwrite: writeFile must only ever be called with the free name.
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps incrementing the suffix until a free name is found", async () => {
+    mockAccess
+      .mockResolvedValueOnce(undefined) // invoice.pdf exists
+      .mockResolvedValueOnce(undefined) // invoice-1.pdf exists
+      .mockResolvedValueOnce(undefined) // invoice-2.pdf exists
+      .mockRejectedValueOnce(
+        Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+      ); // invoice-3.pdf free
+    mockGetAttachment.mockResolvedValue({
+      filename: "invoice.pdf",
+      mimeType: "application/pdf",
+      data: Buffer.from("x"),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.filename).toBe("invoice-3.pdf");
+  });
+
+  it("rejects an attachment whose downloaded byte length exceeds the 25 MB cap", async () => {
+    const oversized = Buffer.alloc(25 * 1024 * 1024 + 1);
+    mockGetAttachment.mockResolvedValue({
+      filename: "big.pdf",
+      mimeType: "application/pdf",
+      data: oversized,
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("25 MB");
+    expect(mockWriteFile).not.toHaveBeenCalled();
+    // No content/bytes leaked in the error path either.
+    const fullText = result.content.map((b) => b.text).join("\n");
+    expect(fullText).not.toContain(oversized.toString("base64").slice(0, 50));
+  });
+
+  it("requires messageId and attachmentId parameters", async () => {
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+    expect(tool.parameters).toMatchObject({
+      required: expect.arrayContaining(["messageId", "attachmentId"]),
+    });
+  });
+
+  it("propagates adapter errors via errorResult", async () => {
+    mockGetAttachment.mockRejectedValue(new Error("attachment not found"));
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-missing",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("attachment not found");
+    expect(mockWriteFile).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,115 @@
+import { mkdir, writeFile, access } from "node:fs/promises";
+import { basename } from "node:path";
 import { GmailAdapter } from "./gmail-adapter.js";
 import { GraphAdapter } from "./graph-adapter.js";
 import type { EmailAdapter } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
+
+// Filesystem convention shared with pinchy-odoo's odoo_attach_file: every
+// agent's uploads land in the same per-agent directory so a downloaded email
+// attachment can be handed off to odoo_attach_file by filename alone. This is
+// NOT plugin config — do not add it to openclaw.plugin.json's configSchema.
+const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
+
+// 25 MB matches odoo_attach_file's own cap (see packages/plugins/pinchy-odoo/index.ts),
+// so anything saved here is always small enough to hand off downstream.
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+const EXT_BY_MIME = new Map<string, string>([
+  ["application/pdf", ".pdf"],
+  ["image/jpeg", ".jpg"],
+  ["image/png", ".png"],
+  ["image/gif", ".gif"],
+  ["image/webp", ".webp"],
+  ["application/msword", ".doc"],
+  [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".docx",
+  ],
+  ["application/vnd.ms-excel", ".xls"],
+  [
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsx",
+  ],
+  ["text/plain", ".txt"],
+  ["text/csv", ".csv"],
+]);
+
+function extensionForMimeType(mimeType: string | undefined): string {
+  if (!mimeType) return ".bin";
+  return EXT_BY_MIME.get(mimeType.toLowerCase()) ?? ".bin";
+}
+
+function humanReadableSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(1)} MB`;
+}
+
+/**
+ * Attachment filenames are attacker-controlled — the email sender picks
+ * them, not the agent — so we SANITIZE rather than reject (unlike
+ * odoo_attach_file's isSafeFilename, which rejects because there the agent
+ * typed the name itself). Strips any path components and unsafe characters;
+ * falls back to a generated name derived from the attachment id when
+ * nothing safe survives.
+ */
+function sanitizeAttachmentFilename(
+  rawFilename: string,
+  attachmentId: string,
+  mimeType: string | undefined,
+): string {
+  const base = basename((rawFilename ?? "").trim().replace(/\\/g, "/"));
+  // Strip anything that isn't a conservative safe-filename character, then
+  // strip leading dots (hidden files / traversal remnants like "..").
+  const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "");
+
+  if (cleaned.length > 0) return cleaned;
+
+  const shortId = attachmentId
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/^\.+/, "")
+    .slice(0, 16);
+  const suffix = shortId.length > 0 ? shortId : "unknown";
+  return `attachment-${suffix}${extensionForMimeType(mimeType)}`;
+}
+
+/** Split "name.ext" into ["name", ".ext"] (empty ext if none). */
+function splitExtension(filename: string): [string, string] {
+  const idx = filename.lastIndexOf(".");
+  if (idx <= 0) return [filename, ""];
+  return [filename.slice(0, idx), filename.slice(idx)];
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Find a filename that doesn't already exist in `dir`, appending -1, -2, …
+ * before the extension. Never overwrites — uploads/ is also the user's
+ * chat-upload zone, so clobbering a user's file would be data loss.
+ */
+async function pickUniqueFilename(
+  dir: string,
+  filename: string,
+): Promise<string> {
+  const [stem, ext] = splitExtension(filename);
+  let candidate = filename;
+  let counter = 0;
+  while (await pathExists(`${dir}/${candidate}`)) {
+    counter += 1;
+    candidate = `${stem}-${counter}${ext}`;
+  }
+  return candidate;
+}
 
 interface PluginToolContext {
   agentId?: string;
@@ -128,9 +236,13 @@ interface EmailCredentials {
  * as `accessToken: undefined`, producing a confusing 401 that masks the
  * real cause.
  */
-function assertCredentialsShape(creds: unknown): asserts creds is EmailCredentials {
+function assertCredentialsShape(
+  creds: unknown,
+): asserts creds is EmailCredentials {
   if (!creds || typeof creds !== "object") {
-    throw new Error(`pinchy-email: credentials must be an object, got ${typeof creds}`);
+    throw new Error(
+      `pinchy-email: credentials must be an object, got ${typeof creds}`,
+    );
   }
   const obj = creds as Record<string, unknown>;
   const looksLikeSecretRef =
@@ -166,7 +278,10 @@ async function fetchCredentials(
     );
   }
 
-  const data = (await response.json()) as { type?: unknown; credentials?: unknown };
+  const data = (await response.json()) as {
+    type?: unknown;
+    credentials?: unknown;
+  };
   if (!data.type || typeof data.type !== "string") {
     throw new Error(
       `pinchy-email: credentials API returned no type field (got ${JSON.stringify((data as { type?: unknown }).type)})`,
@@ -179,7 +294,8 @@ async function fetchCredentials(
 const plugin = {
   id: "pinchy-email",
   name: "Pinchy Email",
-  description: "Email integration (Gmail and Microsoft 365) with per-agent permissions.",
+  description:
+    "Email integration (Gmail and Microsoft 365) with per-agent permissions.",
 
   register(api: PluginApi) {
     // Capture agentConfigs at register() time. OpenClaw calls register() with a
@@ -200,7 +316,10 @@ const plugin = {
         label: name,
         description: "",
         parameters: { type: "object", properties: {} },
-        execute: async () => ({ content: [{ type: "text", text: "" }], isError: true as const }),
+        execute: async () => ({
+          content: [{ type: "text", text: "" }],
+          isError: true as const,
+        }),
       };
     }
 
@@ -213,7 +332,10 @@ const plugin = {
     // OAuth refresh races the call) we invalidate eagerly and refetch once
     // before surfacing the error.
     const CREDENTIALS_TTL_MS = 5 * 60 * 1000; // 5 minutes
-    const cache = new Map<string, { adapter: EmailAdapter; expiresAt: number }>();
+    const cache = new Map<
+      string,
+      { adapter: EmailAdapter; expiresAt: number }
+    >();
 
     function invalidate(agentId: string, connectionId: string) {
       cache.delete(`${agentId}:${connectionId}`);
@@ -243,7 +365,10 @@ const plugin = {
             : (() => {
                 throw new Error(`unsupported email provider: ${type}`);
               })();
-      cache.set(cacheKey, { adapter, expiresAt: Date.now() + CREDENTIALS_TTL_MS });
+      cache.set(cacheKey, {
+        adapter,
+        expiresAt: Date.now() + CREDENTIALS_TTL_MS,
+      });
       return adapter;
     }
 
@@ -276,12 +401,18 @@ const plugin = {
         try {
           return await fn(fresh);
         } catch (retryErr) {
-          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          const retryMsg =
+            retryErr instanceof Error ? retryErr.message : String(retryErr);
           // Read apiBaseUrl/gatewayToken dynamically (same as getOrCreateClient):
           // they live on api.pluginConfig, not in this function's scope.
           const apiBaseUrl = api.pluginConfig?.apiBaseUrl ?? "";
           const gatewayToken = api.pluginConfig?.gatewayToken ?? "";
-          await reportAuthFailure(apiBaseUrl, config.connectionId, gatewayToken, retryMsg);
+          await reportAuthFailure(
+            apiBaseUrl,
+            config.connectionId,
+            gatewayToken,
+            retryMsg,
+          );
           throw retryErr;
         }
       }
@@ -380,11 +511,26 @@ const plugin = {
                 adapter.read(params.id as string),
               );
 
-              return {
-                content: [
-                  { type: "text", text: JSON.stringify(result, null, 2) },
-                ],
-              };
+              const content: ContentBlock[] = [
+                { type: "text", text: JSON.stringify(result, null, 2) },
+              ];
+
+              if (result.attachments && result.attachments.length > 0) {
+                const list = result.attachments
+                  .map(
+                    (a) =>
+                      `- id: ${a.id}, filename: ${a.filename}, mimeType: ${a.mimeType}, size: ${humanReadableSize(a.size)}`,
+                  )
+                  .join("\n");
+                content.push({
+                  type: "text",
+                  text:
+                    `This email has ${result.attachments.length} downloadable attachment(s):\n${list}\n\n` +
+                    `Use email_get_attachment with messageId "${result.id}" and one of the attachment ids above to save it into the workspace.`,
+                });
+              }
+
+              return { content };
             } catch (error) {
               return errorResult(error);
             }
@@ -456,12 +602,7 @@ const plugin = {
                   unread: params.unread as boolean | undefined,
                   sinceDays: params.sinceDays as number | undefined,
                   folder: params.folder as
-                    | "INBOX"
-                    | "SENT"
-                    | "DRAFTS"
-                    | "TRASH"
-                    | "SPAM"
-                    | undefined,
+                    "INBOX" | "SENT" | "DRAFTS" | "TRASH" | "SPAM" | undefined,
                   limit: params.limit as number | undefined,
                 }),
               );
@@ -596,6 +737,123 @@ const plugin = {
         };
       },
       { name: "email_send" },
+    );
+
+    // 6. email_get_attachment
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx?.agentId;
+        if (!agentId) return probeStub("email_get_attachment");
+        const config = getAgentConfig(agentConfigs, agentId);
+        if (!config) return null;
+
+        return {
+          name: "email_get_attachment",
+          label: "Email Get Attachment",
+          description:
+            "Download an email attachment and save it into the agent's workspace uploads directory. Use the messageId and attachmentId shown by email_read. Returns the saved filename, size, and mime type — NOT the file content.",
+          parameters: {
+            type: "object",
+            properties: {
+              messageId: {
+                type: "string",
+                description:
+                  "The email message ID that contains the attachment",
+              },
+              attachmentId: {
+                type: "string",
+                description: "The attachment ID, as shown by email_read",
+              },
+            },
+            required: ["messageId", "attachmentId"],
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              if (!checkPermission(config.permissions, "email", "read")) {
+                return permissionDenied("read");
+              }
+
+              const messageId = params.messageId as string;
+              const attachmentId = params.attachmentId as string;
+
+              // No pre-download size precheck is possible here: the
+              // EmailAdapter#getAttachment contract returns { filename,
+              // mimeType, data } — the provider APIs don't expose a byte
+              // size before the body is fetched, unlike odoo_attach_file's
+              // local-file stat() precheck. We always postcheck data.length
+              // below, which is what actually protects the process (metadata
+              // can lie or be absent; the downloaded buffer cannot).
+              const attachment = await withAuthRetry(
+                agentId,
+                config,
+                (adapter) => adapter.getAttachment(messageId, attachmentId),
+              );
+
+              if (attachment.data.length > MAX_ATTACHMENT_BYTES) {
+                const sizeMb = (attachment.data.length / 1024 / 1024).toFixed(
+                  1,
+                );
+                const maxMb = (MAX_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0);
+                throw new Error(
+                  `Attachment too large: ${sizeMb} MB, max allowed is ${maxMb} MB.`,
+                );
+              }
+
+              const dir = `${WORKSPACE_ROOT}/${agentId}/uploads`;
+              await mkdir(dir, { recursive: true });
+
+              const sanitized = sanitizeAttachmentFilename(
+                attachment.filename,
+                attachmentId,
+                attachment.mimeType,
+              );
+              const finalFilename = await pickUniqueFilename(dir, sanitized);
+              const filePath = `${dir}/${finalFilename}`;
+
+              // Defense-in-depth: confirm the resolved path never escapes the
+              // agent's uploads directory, even though sanitizeAttachmentFilename
+              // already strips path separators and ".." segments.
+              if (
+                basename(filePath) !== finalFilename ||
+                !filePath.startsWith(`${dir}/`)
+              ) {
+                throw new Error(
+                  `Refusing to write attachment outside the uploads directory: ${finalFilename}`,
+                );
+              }
+
+              await writeFile(filePath, attachment.data);
+
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify(
+                      {
+                        filename: finalFilename,
+                        size: attachment.data.length,
+                        mimeType: attachment.mimeType,
+                      },
+                      null,
+                      2,
+                    ),
+                  },
+                  {
+                    type: "text",
+                    text:
+                      `Saved to the workspace uploads directory as "${finalFilename}" ` +
+                      `(${humanReadableSize(attachment.data.length)}). Readable with the file/pdf tools; ` +
+                      `attachable to an Odoo record via odoo_attach_file using this filename.`,
+                  },
+                ],
+              };
+            } catch (error) {
+              return errorResult(error);
+            }
+          },
+        };
+      },
+      { name: "email_get_attachment" },
     );
   },
 };
