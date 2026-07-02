@@ -592,4 +592,85 @@ describe("pinchy-email config generation", () => {
     expect(written).not.toContain("secret-password");
     expect(written).not.toContain("mail.example.com");
   });
+
+  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // pre-#328 agent template creation stored raw per-tool operations (list,
+  // read, search, draft) directly as agent_connection_permissions rows (see
+  // ebe6b47a2's "Operation vocabulary mismatch" fix, which corrected the
+  // WRITE path via detectEmailOperations() but never touched rows that
+  // already existed). A legacy agent can therefore have ONLY a (email,
+  // "search") row in the DB, with no accompanying "read" row. Simulates that
+  // exact pre-existing state (new code, old data) rather than starting from
+  // a clean read+search write, per the sibling guard to the test-skip/
+  // test-deletion policies.
+  it("derives the read toolset and a legacy-tolerant permissions object for an agent whose ONLY DB row is legacy 'search' (no 'read' row)", async () => {
+    const agentsData = [
+      {
+        id: "legacy-search-agent",
+        name: "Legacy Search Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: [],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "legacy-search-agent",
+          connectionId: "conn-google-legacy",
+          model: "email",
+          operation: "search",
+        },
+        integration_connections: {
+          id: "conn-google-legacy",
+          type: "google",
+          name: "Legacy Gmail",
+          description: "",
+          credentials: JSON.stringify({ accessToken: "secret-token" }),
+          data: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve(permissionsData), {
+              where: vi.fn().mockResolvedValue(permissionsData),
+            })
+          ),
+          where: vi.fn().mockResolvedValue([]),
+        })
+      ),
+    } as never);
+
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
+      })
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(getWrittenConfigString());
+    const agentConfig = config.plugins.entries["pinchy-email"].config.agents["legacy-search-agent"];
+
+    // The full read toolset must be emitted — a legacy search-only agent must
+    // not silently lose email_list/email_read/email_search/email_get_attachment.
+    expect(agentConfig.tools).toEqual(
+      expect.arrayContaining(["email_list", "email_read", "email_search", "email_get_attachment"])
+    );
+    // Never additionally grants draft/send from a bare "search" row.
+    expect(agentConfig.tools).not.toContain("email_draft");
+    expect(agentConfig.tools).not.toContain("email_send");
+
+    // The raw DB operation is passed through as-is (build.ts does not rewrite
+    // the stored permission rows) — the plugin's checkPermission is the layer
+    // that must tolerate this legacy shape (see permissions.ts).
+    expect(agentConfig.permissions).toEqual({ email: ["search"] });
+  });
 });

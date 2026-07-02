@@ -240,6 +240,120 @@ describe("permission checks at execution", () => {
   });
 });
 
+// MIGRATION TESTS (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+// pre-Pinchy-#328 agent template creation could persist a standalone
+// (model="email", operation="search") permission row with NO accompanying
+// "read" row. build.ts passes DB permission rows through into the plugin
+// config's `permissions` object unchanged, so a stale config not yet
+// regenerated after upgrading to #328 can still carry exactly
+// `{ email: ["search"] }`. Exercise that legacy shape at the tool-execution
+// layer (not just the permissions.ts unit), so a regression here is caught
+// even if someone changes how index.ts calls checkPermission.
+describe("legacy 'search'-only permissions (pre-#328 rows without a 'read' row)", () => {
+  const legacySearchOnlyConfig: PluginConfig = {
+    ...testConfig,
+    agents: {
+      "agent-1": {
+        connectionId: "conn-1",
+        permissions: { email: ["search"] },
+      },
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCredentialResponse();
+  });
+
+  it("email_list executes (read-gated) for a legacy search-only grant", async () => {
+    mockList.mockResolvedValue([]);
+    const tools = createApi(legacySearchOnlyConfig);
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBeUndefined();
+    expect(mockList).toHaveBeenCalled();
+  });
+
+  it("email_read executes (read-gated) for a legacy search-only grant", async () => {
+    mockRead.mockResolvedValue({
+      id: "msg-1",
+      from: "a@test.com",
+      subject: "Hi",
+      body: "body",
+    });
+    const tools = createApi(legacySearchOnlyConfig);
+    const tool = findTool(tools, "email_read", agentId)!;
+
+    const result = await tool.execute("call-1", { id: "msg-1" });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockRead).toHaveBeenCalledWith("msg-1");
+  });
+
+  it("email_search executes (read-gated) for a legacy search-only grant", async () => {
+    mockSearch.mockResolvedValue([]);
+    const tools = createApi(legacySearchOnlyConfig);
+    const tool = findTool(tools, "email_search", agentId)!;
+
+    const result = await tool.execute("call-1", { subject: "Hi" });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockSearch).toHaveBeenCalled();
+  });
+
+  it("email_get_attachment executes (read-gated) for a legacy search-only grant", async () => {
+    mockGetAttachment.mockResolvedValue({
+      filename: "file.txt",
+      mimeType: "text/plain",
+      data: Buffer.from("hello"),
+    });
+    mockMkdir.mockResolvedValue(undefined);
+    mockAccess.mockRejectedValue(new Error("ENOENT"));
+    mockWriteFile.mockResolvedValue(undefined);
+
+    const tools = createApi(legacySearchOnlyConfig);
+    const tool = findTool(tools, "email_get_attachment", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockGetAttachment).toHaveBeenCalledWith("msg-1", "att-1");
+  });
+
+  it("email_draft still returns permission denied for a legacy search-only grant (search must not unlock draft)", async () => {
+    const tools = createApi(legacySearchOnlyConfig);
+    const tool = findTool(tools, "email_draft", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      to: "test@example.com",
+      subject: "Hello",
+      body: "World",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Permission denied");
+  });
+
+  it("email_send still returns permission denied for a legacy search-only grant (search must not unlock send)", async () => {
+    const tools = createApi(legacySearchOnlyConfig);
+    const tool = findTool(tools, "email_send", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      to: "test@example.com",
+      subject: "Hello",
+      body: "World",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Permission denied");
+  });
+});
+
 describe("credential fetching", () => {
   beforeEach(() => {
     vi.clearAllMocks();

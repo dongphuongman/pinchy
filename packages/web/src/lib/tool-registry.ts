@@ -289,8 +289,10 @@ export function computeAllowedTools(): string[] {
  * (email-permission-section.tsx) and the pinchy-email plugin checks at
  * runtime. Search is deliberately NOT an operation of its own: it is part of
  * "read" (see EMAIL_READ_TOOLS below, and the plugin's email_search handler,
- * which gates on the "read" permission). A legacy "search" row in old data is
- * tolerated for display but grants nothing by itself.
+ * which gates on the "read" permission). A legacy "search" row in old data
+ * (pre-#328 template creation could write one without an accompanying "read"
+ * row) is tolerated for display AND treated as a "read" alias by
+ * getEmailToolsForOperations below — it must never unlock draft/send.
  */
 export const EMAIL_OPERATIONS = ["read", "draft", "send"] as const;
 export type EmailOperation = (typeof EMAIL_OPERATIONS)[number];
@@ -314,11 +316,22 @@ const EMAIL_SEND_TOOLS = ["email_send"] as const;
 /**
  * Returns the email_* tool IDs that should be enabled for the given
  * semantic operations (e.g. ["read", "draft"]).
+ *
+ * Legacy alias: pre-#328 agent template creation stored raw per-tool
+ * operations (list, read, search, draft) as agent_connection_permissions
+ * rows, and a "search" row can exist WITHOUT an accompanying "read" row (see
+ * ebe6b47a2's "Operation vocabulary mismatch" fix, which only normalized the
+ * write path — never touched rows already in the DB). Without this alias, a
+ * legacy search-only agent derives an empty toolset here and silently loses
+ * every email tool after upgrading to #328. "search" therefore grants the
+ * SAME toolset as "read" (matching the plugin's own gate, where email_search
+ * checks the "read" permission) — it must never additionally unlock
+ * draft/send.
  */
 export function getEmailToolsForOperations(operations: string[]): string[] {
   const tools: string[] = [];
   const ops = new Set(operations);
-  if (ops.has("read")) tools.push(...EMAIL_READ_TOOLS);
+  if (ops.has("read") || ops.has("search")) tools.push(...EMAIL_READ_TOOLS);
   if (ops.has("draft")) tools.push(...EMAIL_DRAFT_TOOLS);
   if (ops.has("send")) tools.push(...EMAIL_SEND_TOOLS);
   return tools;

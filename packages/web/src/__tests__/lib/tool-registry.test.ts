@@ -565,7 +565,44 @@ describe("Email operation helpers", () => {
     });
 
     it("ignores unknown operations", () => {
-      expect(getEmailToolsForOperations(["list", "search"])).toEqual([]);
+      // "list" was never a real operation the UI or plugin recognised, unlike
+      // "search" below, which is a genuine legacy alias for "read".
+      expect(getEmailToolsForOperations(["list"])).toEqual([]);
+    });
+
+    // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+    // pre-PR #328 template creation stored per-tool operations (list, read,
+    // search, draft) as raw agent_connection_permissions rows — see
+    // ebe6b47a2's "Operation vocabulary mismatch" fix, which normalized the
+    // WRITE path via detectEmailOperations() but never touched pre-existing
+    // rows. A legacy agent can therefore carry a standalone (email, "search")
+    // row with NO accompanying "read" row. Before this fix,
+    // getEmailToolsForOperations(["search"]) returned [] (silently dropping
+    // ALL email tools for that agent, since "search" wasn't read as an
+    // operation by this function). It must now derive the same toolset as
+    // "read", matching the plugin's own gate (email_search checks "read").
+    it("treats legacy 'search' operation as granting the read toolset (pre-#328 rows lacked a 'read' row)", () => {
+      expect(getEmailToolsForOperations(["search"])).toEqual([
+        "email_list",
+        "email_read",
+        "email_search",
+        "email_get_attachment",
+      ]);
+    });
+
+    it("legacy 'search' does not additionally unlock draft/send", () => {
+      const tools = getEmailToolsForOperations(["search"]);
+      expect(tools).not.toContain("email_draft");
+      expect(tools).not.toContain("email_send");
+    });
+
+    it("legacy 'search' combined with explicit 'read' does not duplicate read tools", () => {
+      expect(getEmailToolsForOperations(["read", "search"])).toEqual([
+        "email_list",
+        "email_read",
+        "email_search",
+        "email_get_attachment",
+      ]);
     });
   });
 
