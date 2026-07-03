@@ -164,6 +164,18 @@ To recover, open the integration's `…` menu and choose **Edit credentials** (o
 Pinchy only marks an integration as failed on **permanent** errors — responses like `401 Unauthorized` or `403 Forbidden`. Transient network errors and rate-limit responses (5xx, 429) are retried and do not surface as a failed state.
 :::
 
+### When the OAuth app itself goes missing
+
+Email connections (Gmail and Microsoft 365) depend on a separate, shared OAuth app — see [The app and the mailboxes](#the-app-and-the-mailboxes). If an admin resets or deletes that app's credentials in **Connected apps** while mailboxes are still connected through it, each affected mailbox shows an amber **"App not configured"** badge on **Settings → Integrations**, distinct from the red **"Authentication failed"** state used for revoked or expired credentials.
+
+Restoring the **same app** — same Client ID, with a new secret if needed — clears the badge for every affected mailbox automatically, with no per-mailbox reconnect required. Refresh tokens are bound to the app's Client ID plus the connected user and scope, not to the secret, so as soon as the app is configured again, the next token refresh just works.
+
+A full reconnect is only needed if the app was permanently deleted rather than just having its credentials reset, or if you're deliberately switching the mailbox to a different app going forward.
+
+:::note
+"App not configured" is computed on each page load, not stored — Pinchy doesn't persist this state anywhere. It appears the moment the app's credentials are missing and disappears the moment they're restored, with no manual step to clear it.
+:::
+
 ## Security
 
 All integration credentials are handled with the same rigor as provider API keys:

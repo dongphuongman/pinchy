@@ -259,6 +259,10 @@ The redirect URI in Azure must exactly match the one shown in Pinchy — includi
 
 The Client ID is incorrect or belongs to a different tenant. Double-check that you copied the **Application (client) ID** from the correct app registration.
 
+**Tenant ID not found**
+
+Pasting the wrong value into the **Tenant ID** field — for example the Application (client) ID instead of the Directory (tenant) ID — used to only surface as `AADSTS90002` on Microsoft's own error page, with no way back to Pinchy. Pinchy now checks the Tenant ID when you click **Save & Continue** and shows the error inline on the settings form instead, so you can fix it on the spot without ever leaving Pinchy. Double-check that you copied the **Directory (tenant) ID** from the app registration's **Overview** page (see [1.4](#14-copy-your-app-identifiers)).
+
 **Client secret expired**
 
 Azure client secrets have a finite lifetime (24 months maximum). When a secret expires, Pinchy can no longer refresh tokens. Create a new client secret in Azure, then click **Edit** on the Microsoft row in the **Connected apps** section to paste the new **Value**. Because you're only rotating the secret, connected mailboxes stay attached and agents resume working on their next call — you don't need to reconnect them. See [Rotate the client secret before it expires](#rotate-the-client-secret-before-it-expires).
