@@ -58,7 +58,8 @@ describe("validateMicrosoftTenant", () => {
     await validateMicrosoftTenant("my-tenant");
 
     expect(global.fetch).toHaveBeenCalledWith(
-      "http://graph-mock:9005/my-tenant/v2.0/.well-known/openid-configuration"
+      "http://graph-mock:9005/my-tenant/v2.0/.well-known/openid-configuration",
+      { signal: expect.any(AbortSignal) }
     );
   });
 
@@ -69,8 +70,28 @@ describe("validateMicrosoftTenant", () => {
     await validateMicrosoftTenant("my-tenant");
 
     expect(global.fetch).toHaveBeenCalledWith(
-      "https://login.microsoftonline.com/my-tenant/v2.0/.well-known/openid-configuration"
+      "https://login.microsoftonline.com/my-tenant/v2.0/.well-known/openid-configuration",
+      { signal: expect.any(AbortSignal) }
     );
+  });
+
+  it("resolves { ok: 'unknown' } (fail-open) when the request times out", async () => {
+    vi.mocked(global.fetch).mockRejectedValueOnce(
+      new DOMException("The operation was aborted.", "TimeoutError")
+    );
+
+    const result = await validateMicrosoftTenant("some-tenant");
+
+    expect(result).toEqual({ ok: "unknown" });
+  });
+
+  it("passes an AbortSignal that times out after 10 seconds", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce({ ok: true, status: 200 } as Response);
+
+    await validateMicrosoftTenant("my-tenant");
+
+    const [, options] = vi.mocked(global.fetch).mock.calls[0];
+    expect(options?.signal?.aborted).toBe(false);
   });
 
   it("resolves { ok: true } for a blank/empty tenant WITHOUT calling fetch", async () => {

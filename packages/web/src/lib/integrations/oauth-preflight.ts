@@ -6,6 +6,12 @@
 // lifecycle-hardening.md.
 const WELL_KNOWN_TENANTS = new Set(["organizations", "common", "consumers"]);
 
+// Matches the timeout convention used by the other third-party probes in this
+// codebase (brave-probe.ts, providers.ts' PROVIDER_PROBE_TIMEOUT_MS) — an
+// AbortSignal timeout rejects fetch(), which the catch below turns into the
+// same fail-open "unknown" result as any other network error.
+const TENANT_PROBE_TIMEOUT_MS = 10_000;
+
 // network/other — caller should fail-open
 export type TenantValidation =
   { ok: true } | { ok: false; reason: "not_found" } | { ok: "unknown" };
@@ -16,12 +22,13 @@ export async function validateMicrosoftTenant(tenantId: string): Promise<TenantV
   const host = process.env.MICROSOFT_OAUTH_BASE_URL || "https://login.microsoftonline.com";
   try {
     const res = await fetch(
-      `${host}/${encodeURIComponent(t)}/v2.0/.well-known/openid-configuration`
+      `${host}/${encodeURIComponent(t)}/v2.0/.well-known/openid-configuration`,
+      { signal: AbortSignal.timeout(TENANT_PROBE_TIMEOUT_MS) }
     );
     if (res.ok) return { ok: true };
     if (res.status === 400) return { ok: false, reason: "not_found" };
     return { ok: "unknown" }; // 5xx etc. — don't block on a transient upstream problem
   } catch {
-    return { ok: "unknown" }; // network error — fail-open
+    return { ok: "unknown" }; // network error or timeout — fail-open
   }
 }
