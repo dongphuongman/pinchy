@@ -7,6 +7,7 @@ import {
   deleteOAuthSettings,
 } from "@/lib/integrations/oauth-settings";
 import { getOAuthProvider } from "@/lib/integrations/oauth-providers";
+import { validateMicrosoftTenant } from "@/lib/integrations/oauth-preflight";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 import { db } from "@/db";
@@ -114,6 +115,26 @@ export async function POST(request: NextRequest) {
       );
     }
     clientSecret = existing.clientSecret;
+  }
+
+  // Pre-flight tenant check (Microsoft only): AADSTS90002 ("tenant not found")
+  // is a pre-authorize error on Microsoft's own authorize endpoint, so it never
+  // redirects back to our callback — a wrong Tenant ID would otherwise trap the
+  // admin on Microsoft's error page with no way for Pinchy to catch it. Catching
+  // it here, at save time, turns it into an inline field error instead. Fails
+  // open on network/unknown errors — only a definitive "not_found" blocks save.
+  if (data.provider === "microsoft" && data.tenantId) {
+    const tenant = await validateMicrosoftTenant(data.tenantId);
+    if (tenant.ok === false) {
+      return NextResponse.json(
+        {
+          error:
+            `Tenant ID "${data.tenantId}" was not found. Make sure you pasted the ` +
+            `Directory (tenant) ID from Azure — not the Application (client) ID.`,
+        },
+        { status: 400 }
+      );
+    }
   }
 
   // Persist per-provider settings (Microsoft carries an optional tenantId). The

@@ -79,6 +79,24 @@ app.post("/:tenant/oauth2/v2.0/token", (req, res) => {
   });
 });
 
+// OIDC discovery — pre-flight tenant existence check. 400 + AADSTS90002 for the
+// designated bad tenant, 200 with a minimal discovery doc otherwise.
+app.get("/:tenant/v2.0/.well-known/openid-configuration", (req, res) => {
+  const bad = "00000000-0000-0000-0000-000000000000"; // E2E "wrong tenant" marker
+  if (req.params.tenant === bad) {
+    return res.status(400).json({
+      error: "invalid_tenant",
+      error_description: `AADSTS90002: Tenant '${bad}' not found.`,
+      error_codes: [90002],
+    });
+  }
+  res.json({
+    issuer: `http://graph-mock:9005/${req.params.tenant}/v2.0`,
+    authorization_endpoint: `http://graph-mock:9005/${req.params.tenant}/oauth2/v2.0/authorize`,
+    token_endpoint: `http://graph-mock:9005/${req.params.tenant}/oauth2/v2.0/token`,
+  });
+});
+
 // ---- Microsoft Graph API surface ----
 
 // GET /v1.0/me — user profile

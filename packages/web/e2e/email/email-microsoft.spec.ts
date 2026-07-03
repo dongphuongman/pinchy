@@ -169,6 +169,80 @@ test.describe("pinchy-email — Microsoft E2E", () => {
   });
 });
 
+// ── Tenant pre-flight (dead-end prevention) ──────────────────────────────────
+// AADSTS90002 ("tenant not found") is a pre-authorize error on Microsoft's own
+// authorize endpoint — it never redirects back to our callback, so a wrong
+// Tenant ID would otherwise trap the admin on Microsoft's error page with no
+// way for Pinchy to catch it. This is a route-level `request` assertion rather
+// than a UI-driven flow: the Settings dialog interaction itself is already
+// covered elsewhere, and the only new behavior worth an E2E proof here is that
+// the real graph-mock discovery endpoint (not a unit-test double) returns the
+// AADSTS90002-shaped 400 for the designated bad tenant and the route surfaces
+// it as an inline 400 before any connection exists.
+test.describe("pinchy-email — Microsoft OAuth tenant pre-flight", () => {
+  const BAD_TENANT = "00000000-0000-0000-0000-000000000000";
+  let cookie: string;
+
+  test.beforeAll(async () => {
+    await seedSetup();
+    await waitForPinchy();
+    await waitForGraphMock();
+    cookie = await login();
+  });
+
+  test.afterEach(async () => {
+    // Best-effort cleanup so this spec never leaves Microsoft OAuth app
+    // settings behind for later tests/specs in the same run.
+    await pinchyDelete("/api/settings/oauth?provider=microsoft", cookie);
+  });
+
+  test("rejects a bad tenant with 400 and creates no connection", async () => {
+    const before = await pinchyGet("/api/integrations", cookie);
+    expect(before.status).toBe(200);
+    const beforeList = (await before.json()) as Array<{ type: string }>;
+    const beforeCount = beforeList.filter((c) => c.type === "microsoft").length;
+
+    const res = await pinchyPost(
+      "/api/settings/oauth",
+      {
+        provider: "microsoft",
+        clientId: "e2e-preflight-client-id",
+        clientSecret: "e2e-preflight-client-secret",
+        tenantId: BAD_TENANT,
+      },
+      cookie
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain(BAD_TENANT);
+    expect(body.error).toMatch(/tenant/i);
+
+    const after = await pinchyGet("/api/integrations", cookie);
+    expect(after.status).toBe(200);
+    const afterList = (await after.json()) as Array<{ type: string }>;
+    const afterCount = afterList.filter((c) => c.type === "microsoft").length;
+    expect(afterCount).toBe(beforeCount);
+  });
+
+  test("accepts a valid tenant and saves the settings", async () => {
+    const res = await pinchyPost(
+      "/api/settings/oauth",
+      {
+        provider: "microsoft",
+        clientId: "e2e-preflight-client-id",
+        clientSecret: "e2e-preflight-client-secret",
+        tenantId: "a-real-looking-tenant-id",
+      },
+      cookie
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean };
+    expect(body.success).toBe(true);
+  });
+});
+
 // ── Dispatch probe (pinchy-email plugin coverage, Microsoft) ─────────────────
 // Mirrors the Gmail dispatch probe: switches the default provider to host
 // fake-Ollama for this describe block only (via the allowed `ollama.local`

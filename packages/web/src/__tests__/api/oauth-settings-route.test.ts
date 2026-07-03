@@ -31,6 +31,10 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/integrations/oauth-preflight", () => ({
+  validateMicrosoftTenant: vi.fn(),
+}));
+
 // The GET route counts integrationConnections of the provider's type for the
 // blast-radius warning. Mock the select().from().where() chain to resolve to a
 // single `[{ value: N }]` count row, mirroring drizzle's `count()` result.
@@ -50,6 +54,7 @@ import {
   deleteOAuthSettings,
 } from "@/lib/integrations/oauth-settings";
 import { appendAuditLog } from "@/lib/audit";
+import { validateMicrosoftTenant } from "@/lib/integrations/oauth-preflight";
 import { after } from "next/server";
 
 const adminSession = {
@@ -241,6 +246,12 @@ describe("POST /api/settings/oauth", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    // Default the tenant pre-flight check to "ok" so pre-existing tests in this
+    // suite (written before the pre-flight check existed) that pass a tenantId
+    // without caring about validation still exercise the save path unchanged.
+    // The dedicated "microsoft tenant pre-flight" describe block below sets its
+    // own return values per test.
+    vi.mocked(validateMicrosoftTenant).mockResolvedValue({ ok: true });
     const mod = await import("@/app/api/settings/oauth/route");
     POST = mod.POST;
   });
@@ -531,6 +542,132 @@ describe("POST /api/settings/oauth", () => {
       clientId: "g-client",
       clientSecret: "g-secret",
     });
+  });
+});
+
+describe("POST /api/settings/oauth — microsoft tenant pre-flight", () => {
+  let POST: typeof import("@/app/api/settings/oauth/route").POST;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/settings/oauth/route");
+    POST = mod.POST;
+  });
+
+  it("returns 400 and does not save when the tenant validates as not_found", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(validateMicrosoftTenant).mockResolvedValueOnce({
+      ok: false,
+      reason: "not_found",
+    });
+
+    const req = new NextRequest("http://localhost/api/settings/oauth", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "microsoft",
+        clientId: "ms-client",
+        clientSecret: "ms-secret",
+        tenantId: "bad-tenant-id",
+      }),
+    });
+    const response = await POST(req);
+    expect(response.status).toBe(400);
+
+    const body = await response.json();
+    expect(body.error).toContain("bad-tenant-id");
+    expect(body.error).toMatch(/tenant/i);
+    expect(body.error).toMatch(/client/i);
+    expect(saveOAuthSettings).not.toHaveBeenCalled();
+  });
+
+  it("saves and returns 200 when the tenant validates ok", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(validateMicrosoftTenant).mockResolvedValueOnce({ ok: true });
+    vi.mocked(saveOAuthSettings).mockResolvedValueOnce(undefined);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "microsoft",
+        clientId: "ms-client",
+        clientSecret: "ms-secret",
+        tenantId: "good-tenant-id",
+      }),
+    });
+    const response = await POST(req);
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body).toEqual({ success: true });
+    expect(saveOAuthSettings).toHaveBeenCalledWith("microsoft", {
+      clientId: "ms-client",
+      clientSecret: "ms-secret",
+      tenantId: "good-tenant-id",
+    });
+  });
+
+  it("does not call the tenant validator (or ignores its result) and saves when tenantId is blank", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(saveOAuthSettings).mockResolvedValueOnce(undefined);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "microsoft",
+        clientId: "ms-client",
+        clientSecret: "ms-secret",
+      }),
+    });
+    const response = await POST(req);
+    expect(response.status).toBe(200);
+    expect(validateMicrosoftTenant).not.toHaveBeenCalled();
+    expect(saveOAuthSettings).toHaveBeenCalledWith("microsoft", {
+      clientId: "ms-client",
+      clientSecret: "ms-secret",
+    });
+  });
+
+  it("fails open (200, saved) when the tenant validator returns ok: 'unknown'", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(validateMicrosoftTenant).mockResolvedValueOnce({ ok: "unknown" });
+    vi.mocked(saveOAuthSettings).mockResolvedValueOnce(undefined);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "microsoft",
+        clientId: "ms-client",
+        clientSecret: "ms-secret",
+        tenantId: "some-tenant-id",
+      }),
+    });
+    const response = await POST(req);
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body).toEqual({ success: true });
+    expect(saveOAuthSettings).toHaveBeenCalledWith("microsoft", {
+      clientId: "ms-client",
+      clientSecret: "ms-secret",
+      tenantId: "some-tenant-id",
+    });
+  });
+
+  it("does not call the tenant validator for the google provider", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(saveOAuthSettings).mockResolvedValueOnce(undefined);
+
+    const req = new NextRequest("http://localhost/api/settings/oauth", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "google",
+        clientId: "g-client",
+        clientSecret: "g-secret",
+      }),
+    });
+    const response = await POST(req);
+    expect(response.status).toBe(200);
+    expect(validateMicrosoftTenant).not.toHaveBeenCalled();
   });
 });
 
