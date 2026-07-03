@@ -193,9 +193,18 @@ export function ConnectedApps({ onConnectionsChanged }: { onConnectionsChanged?:
           <AlertDialogHeader>
             <AlertDialogTitle>Reset the {resetLabel} app?</AlertDialogTitle>
             <AlertDialogDescription>
-              Resetting the {resetLabel} app will disconnect {resetCount} connected integration
-              {resetCount === 1 ? "" : "s"}. They must be reconnected afterwards. This can&apos;t be
-              undone.
+              {resetCount === 0 ? (
+                <>
+                  Resetting the {resetLabel} app clears its stored credentials. No integrations are
+                  connected through it, so nothing is disconnected. This can&apos;t be undone.
+                </>
+              ) : (
+                <>
+                  Resetting the {resetLabel} app will disconnect {resetCount} connected integration
+                  {resetCount === 1 ? "" : "s"}. They must be reconnected afterwards. This
+                  can&apos;t be undone.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
