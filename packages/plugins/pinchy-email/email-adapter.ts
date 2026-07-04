@@ -1,5 +1,22 @@
 export type Folder = "INBOX" | "SENT" | "DRAFTS" | "TRASH" | "SPAM";
 
+// Shared by every adapter: the canonical-name validation and error message are
+// identical across providers, only the provider-specific value for each
+// folder differs (Gmail label IDs vs Graph well-known folder names). Sharing
+// this keeps that validation from drifting between adapters.
+export function createFolderMapper(
+  mapping: Record<Folder, string>,
+): (f: Folder) => string {
+  return function mapFolder(f: Folder): string {
+    const value = mapping[f];
+    if (!value)
+      throw new Error(
+        `unknown folder: ${f}. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM.`,
+      );
+    return value;
+  };
+}
+
 export interface EmailSummary {
   id: string;
   from: string;

@@ -492,6 +492,22 @@ describe("GraphAdapter.search", () => {
       expect.any(Object),
     );
   });
+
+  it("escapes double quotes and backslashes in $search values (KQL injection guard)", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ value: [] }),
+    });
+    // Text-only terms take the plain $search path (no unread/sinceDays), so
+    // this exercises the vulnerable branch directly. A literal quote or
+    // backslash in the value must not be able to break out of the
+    // surrounding $search="..." KQL string.
+    await adapter.search({ from: 'o"brien\\example.com' });
+    const url = (fetch as Mock).mock.calls[0][0] as string;
+    const decoded = decodeURIComponent(url).replace(/\+/g, " ");
+    expect(decoded).toContain('$search="from:o\\"brien\\\\example.com"');
+  });
 });
 
 describe("GraphAdapter.draft", () => {

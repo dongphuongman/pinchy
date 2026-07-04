@@ -1,8 +1,8 @@
 import { google } from "googleapis";
+import { createFolderMapper } from "./email-adapter.js";
 import type {
   EmailAdapter,
   EmailAttachment,
-  Folder,
   ListOptions,
   SearchOptions,
   ComposeOptions,
@@ -12,22 +12,13 @@ import type {
 
 export type { EmailSummary, EmailFull };
 
-const FOLDER_TO_GMAIL_LABEL: Record<Folder, string> = {
+const mapFolder = createFolderMapper({
   INBOX: "INBOX",
   SENT: "SENT",
   DRAFTS: "DRAFT",
   TRASH: "TRASH",
   SPAM: "SPAM",
-};
-
-function mapFolder(f: Folder): string {
-  const label = FOLDER_TO_GMAIL_LABEL[f];
-  if (!label)
-    throw new Error(
-      `unknown folder: ${f}. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM.`,
-    );
-  return label;
-}
+});
 
 function buildGmailQuery(opts: SearchOptions): string {
   const parts: string[] = [];

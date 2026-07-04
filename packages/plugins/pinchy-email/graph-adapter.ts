@@ -1,7 +1,7 @@
+import { createFolderMapper } from "./email-adapter.js";
 import type {
   EmailAdapter,
   EmailAttachment,
-  Folder,
   ListOptions,
   SearchOptions,
   ComposeOptions,
@@ -9,25 +9,16 @@ import type {
   EmailFull,
 } from "./email-adapter.js";
 
-const FOLDER_TO_GRAPH: Record<Folder, string> = {
+const mapFolder = createFolderMapper({
   INBOX: "inbox",
   SENT: "sentitems",
   DRAFTS: "drafts",
   TRASH: "deleteditems",
   SPAM: "junkemail",
-};
+});
 
 const SUMMARY_SELECT =
   "id,subject,bodyPreview,receivedDateTime,from,toRecipients,isRead";
-
-function mapFolder(f: Folder): string {
-  const g = FOLDER_TO_GRAPH[f];
-  if (!g)
-    throw new Error(
-      `unknown folder: ${f}. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM.`,
-    );
-  return g;
-}
 
 // Escape a value for use inside an OData single-quoted string literal. OData
 // escapes a single quote by doubling it; without this an apostrophe in a search
@@ -35,6 +26,15 @@ function mapFolder(f: Folder): string {
 // into — the $filter expression.
 function odataString(v: string): string {
   return v.replace(/'/g, "''");
+}
+
+// Escape a value for use inside a $search KQL string, which this adapter
+// always wraps in double quotes. Backslashes must be escaped BEFORE quotes so
+// a trailing "\" can't escape the closing quote; without this a literal quote
+// or backslash in a search term breaks out of the $search="..." string early
+// and can inject additional KQL.
+function kqlString(v: string): string {
+  return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 interface GraphMessage {
@@ -187,9 +187,9 @@ export class GraphAdapter implements EmailAdapter {
   async search(opts: SearchOptions): Promise<EmailSummary[]> {
     const filters: string[] = [];
     const searchTerms: string[] = [];
-    if (opts.from) searchTerms.push(`from:${opts.from}`);
-    if (opts.to) searchTerms.push(`to:${opts.to}`);
-    if (opts.subject) searchTerms.push(`subject:${opts.subject}`);
+    if (opts.from) searchTerms.push(`from:${kqlString(opts.from)}`);
+    if (opts.to) searchTerms.push(`to:${kqlString(opts.to)}`);
+    if (opts.subject) searchTerms.push(`subject:${kqlString(opts.subject)}`);
     if (opts.unread) filters.push("isRead eq false");
     if (opts.sinceDays != null) {
       const cutoff = new Date(
