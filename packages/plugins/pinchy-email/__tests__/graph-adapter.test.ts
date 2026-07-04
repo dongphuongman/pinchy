@@ -48,17 +48,32 @@ describe("GraphAdapter.list", () => {
     );
   });
 
-  it("list({unreadOnly:true}) appends $filter=isRead eq false", async () => {
+  it("list({unreadOnly:true}) prepends the receivedDateTime sentinel to $filter so it stays InefficientFilter-compliant alongside $orderby=receivedDateTime desc", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ value: [] }),
     });
     await adapter.list({ unreadOnly: true });
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("$filter=isRead%20eq%20false"),
-      expect.any(Object),
+    const url = (fetch as Mock).mock.calls[0][0] as string;
+    const decoded = decodeURIComponent(url).replace(/\+/g, " ");
+    expect(decoded).toContain(
+      "$filter=receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false",
     );
+    expect(decoded).toContain("$orderby=receivedDateTime desc");
+  });
+
+  it("list({folder:'INBOX'}) without unreadOnly emits $orderby with no $filter (unchanged behavior)", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ value: [] }),
+    });
+    await adapter.list({ folder: "INBOX" });
+    const url = (fetch as Mock).mock.calls[0][0] as string;
+    const decoded = decodeURIComponent(url).replace(/\+/g, " ");
+    expect(decoded).not.toContain("$filter=");
+    expect(decoded).toContain("$orderby=receivedDateTime desc");
   });
 
   it("unknown folder throws", async () => {
@@ -428,7 +443,7 @@ describe("GraphAdapter.search", () => {
     expect(decodeURIComponent(url)).toContain("subject:invoice");
   });
 
-  it("search({unread:true,sinceDays:7}) uses $filter for date and isRead", async () => {
+  it("search({unread:true,sinceDays:7}) uses $filter for date and isRead, with receivedDateTime first (Graph InefficientFilter ordering rule) and no duplicate receivedDateTime predicate", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
@@ -440,6 +455,36 @@ describe("GraphAdapter.search", () => {
     const decoded = decodeURIComponent(url).replace(/\+/g, " ");
     expect(decoded).toContain("isRead eq false");
     expect(decoded).toContain("receivedDateTime ge");
+    // receivedDateTime must be the FIRST filter predicate — it matches the
+    // $orderby property — and it must be the real cutoff, not the sentinel;
+    // there must be exactly one receivedDateTime predicate.
+    const filterMatch = decoded.match(/\$filter=([^&]+)/);
+    expect(filterMatch).not.toBeNull();
+    const filterValue = filterMatch![1];
+    expect(filterValue.startsWith("receivedDateTime ge ")).toBe(true);
+    expect(filterValue).not.toContain("1970-01-01T00:00:00Z");
+    expect(filterValue.match(/receivedDateTime ge/g)?.length ?? 0).toBe(1);
+    expect(decoded).toContain("$orderby=receivedDateTime desc");
+  });
+
+  it("search({unread:true}) without sinceDays prepends the receivedDateTime sentinel before isRead so $filter+$orderby stay InefficientFilter-compliant", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ value: [] }),
+    });
+    await adapter.search({ unread: true });
+    const url = (fetch as Mock).mock.calls[0][0] as string;
+    const decoded = decodeURIComponent(url).replace(/\+/g, " ");
+    const filterMatch = decoded.match(/\$filter=([^&]+)/);
+    expect(filterMatch).not.toBeNull();
+    const filterValue = filterMatch![1];
+    expect(
+      filterValue.startsWith(
+        "receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false",
+      ),
+    ).toBe(true);
+    expect(decoded).toContain("$orderby=receivedDateTime desc");
   });
 
   it("search({}) throws 'at least one filter'", async () => {
@@ -447,7 +492,7 @@ describe("GraphAdapter.search", () => {
     await expect(adapter.search({})).rejects.toThrow(/at least one/i);
   });
 
-  it("search({from, unread}) uses only $filter (not $search) when both present", async () => {
+  it("search({from, unread}) uses only $filter (not $search) when both present, with receivedDateTime sentinel first (Graph InefficientFilter ordering rule)", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
@@ -462,6 +507,20 @@ describe("GraphAdapter.search", () => {
       "from/emailAddress/address eq 'alice@example.com'",
     );
     expect(decoded).toContain("isRead eq false");
+    // receivedDateTime (matching $orderby) must be first, then isRead, then
+    // the from-predicate — the exact order of non-receivedDateTime predicates
+    // after position 1 is an implementation detail, but receivedDateTime MUST
+    // lead the $filter string.
+    const filterMatch = decoded.match(/\$filter=([^&]+)/);
+    expect(filterMatch).not.toBeNull();
+    const filterValue = filterMatch![1];
+    expect(
+      filterValue.startsWith("receivedDateTime ge 1970-01-01T00:00:00Z"),
+    ).toBe(true);
+    expect(
+      filterValue.indexOf("isRead eq false") <
+        filterValue.indexOf("from/emailAddress/address"),
+    ).toBe(true);
   });
 
   it("escapes single quotes in $filter values (OData injection guard)", async () => {

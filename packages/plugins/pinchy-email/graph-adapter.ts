@@ -62,6 +62,28 @@ interface GraphAttachment {
 
 const FILE_ATTACHMENT_TYPE = "#microsoft.graph.fileAttachment";
 
+// Microsoft Graph v1.0 message-listing endpoints require every property named
+// in $orderby to also appear in $filter, in the same order, ahead of any other
+// filter properties — violating this returns HTTP 400 InefficientFilter ("The
+// restriction or sort order is too complex for this operation"). This adapter
+// always orders by receivedDateTime desc, so whenever a $filter is also
+// present, a receivedDateTime predicate must lead it. When the caller has no
+// receivedDateTime predicate of their own (e.g. a plain isRead filter), prepend
+// the sentinel `receivedDateTime ge 1970-01-01T00:00:00Z`, which matches every
+// message and is the standard documented workaround for InefficientFilter.
+const RECEIVED_DATE_TIME_SENTINEL = "receivedDateTime ge 1970-01-01T00:00:00Z";
+
+function buildOrderedFilter(filters: string[]): string | undefined {
+  if (filters.length === 0) return undefined;
+  const hasReceivedDateTime = filters.some((f) =>
+    f.startsWith("receivedDateTime "),
+  );
+  const ordered = hasReceivedDateTime
+    ? filters
+    : [RECEIVED_DATE_TIME_SENTINEL, ...filters];
+  return ordered.join(" and ");
+}
+
 function toSummary(m: GraphMessage): EmailSummary {
   return {
     id: m.id,
@@ -111,8 +133,10 @@ export class GraphAdapter implements EmailAdapter {
       `$select=${encodeURIComponent(SUMMARY_SELECT)}`,
       `$orderby=${encodeURIComponent("receivedDateTime desc")}`,
     ];
-    if (opts.unreadOnly)
-      parts.push(`$filter=${encodeURIComponent("isRead eq false")}`);
+    const filter = buildOrderedFilter(
+      opts.unreadOnly ? ["isRead eq false"] : [],
+    );
+    if (filter) parts.push(`$filter=${encodeURIComponent(filter)}`);
     const res = await this.req(`${path}?${parts.join("&")}`);
     const data = (await res.json()) as { value: GraphMessage[] };
     return data.value.map(toSummary);
@@ -185,18 +209,20 @@ export class GraphAdapter implements EmailAdapter {
   }
 
   async search(opts: SearchOptions): Promise<EmailSummary[]> {
+    // receivedDateTime is pushed first (when present) so it always leads the
+    // final $filter — required by buildOrderedFilter's Graph $orderby rule.
     const filters: string[] = [];
     const searchTerms: string[] = [];
     if (opts.from) searchTerms.push(`from:${kqlString(opts.from)}`);
     if (opts.to) searchTerms.push(`to:${kqlString(opts.to)}`);
     if (opts.subject) searchTerms.push(`subject:${kqlString(opts.subject)}`);
-    if (opts.unread) filters.push("isRead eq false");
     if (opts.sinceDays != null) {
       const cutoff = new Date(
         Date.now() - opts.sinceDays * 86_400_000,
       ).toISOString();
       filters.push(`receivedDateTime ge ${cutoff}`);
     }
+    if (opts.unread) filters.push("isRead eq false");
     if (searchTerms.length === 0 && filters.length === 0) {
       throw new Error("search requires at least one filter field");
     }
@@ -221,14 +247,14 @@ export class GraphAdapter implements EmailAdapter {
         );
       if (opts.subject)
         filters.push(`contains(subject, '${odataString(opts.subject)}')`);
-      params.set("$filter", filters.join(" and "));
+      params.set("$filter", buildOrderedFilter(filters)!);
       params.set("$orderby", "receivedDateTime desc");
     } else if (searchTerms.length > 0) {
       // Only text terms — use $search (note: $orderby is not allowed with $search)
       params.set("$search", `"${searchTerms.join(" ")}"`);
     } else {
       // Only OData filters — use $filter
-      params.set("$filter", filters.join(" and "));
+      params.set("$filter", buildOrderedFilter(filters)!);
       params.set("$orderby", "receivedDateTime desc");
     }
 

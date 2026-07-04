@@ -13,6 +13,41 @@ function generateId() {
   return crypto.randomBytes(16).toString("hex").toUpperCase();
 }
 
+// Microsoft Graph v1.0 message-listing endpoints require every property named
+// in $orderby to also appear in $filter, in the same order, ahead of any other
+// filter properties. Violating this returns HTTP 400 InefficientFilter ("The
+// restriction or sort order is too complex for this operation"). Real Graph
+// enforces this; this mock didn't, so a client bug that violates the rule
+// stayed invisible in E2E. Reproduce the rejection here (string-based checks
+// are sufficient for a mock — this is not a full OData parser).
+function checkInefficientFilter(req, res) {
+  const filter = req.query.$filter;
+  const orderby = req.query.$orderby;
+  if (!filter || !orderby) return true;
+  const orderbyProps = String(orderby)
+    .split(",")
+    .map((clause) => clause.trim().split(/\s+/)[0]);
+  const filterStr = String(filter);
+  const firstProp = orderbyProps[0];
+  const startsWithFirst = filterStr.trimStart().startsWith(firstProp);
+  const allPropsPresent = orderbyProps.every((prop) =>
+    filterStr.includes(prop),
+  );
+  if (!startsWithFirst || !allPropsPresent) {
+    res
+      .status(400)
+      .json({
+        error: {
+          code: "InefficientFilter",
+          message:
+            "The restriction or sort order is too complex for this operation.",
+        },
+      });
+    return false;
+  }
+  return true;
+}
+
 function resetState() {
   messages = [
     {
@@ -112,6 +147,7 @@ app.get("/v1.0/me", (req, res) => {
 // GET /v1.0/me/messages — list messages
 app.get("/v1.0/me/messages", (req, res) => {
   if (!requireBearer(req, res)) return;
+  if (!checkInefficientFilter(req, res)) return;
   requestLog.push({ endpoint: "/v1.0/me/messages", query: req.query });
   res.json({ value: messages, "@odata.count": messages.length });
 });
@@ -124,6 +160,7 @@ app.get("/v1.0/me/messages", (req, res) => {
 // the folder segment only affects the logged endpoint.
 app.get("/v1.0/me/mailFolders/:folderId/messages", (req, res) => {
   if (!requireBearer(req, res)) return;
+  if (!checkInefficientFilter(req, res)) return;
   requestLog.push({
     endpoint: `/v1.0/me/mailFolders/${req.params.folderId}/messages`,
     query: req.query,
