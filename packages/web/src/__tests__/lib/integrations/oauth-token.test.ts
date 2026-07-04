@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { EXPIRY_BUFFER_MS, isTokenExpired, computeExpiresAt } from "@/lib/integrations/oauth-token";
+import {
+  EXPIRY_BUFFER_MS,
+  isTokenExpired,
+  computeExpiresAt,
+  createRefreshDedup,
+} from "@/lib/integrations/oauth-token";
 
 describe("oauth-token", () => {
   // Freeze the clock: isTokenExpired() compares against a fresh Date.now() call,
@@ -70,6 +75,58 @@ describe("oauth-token", () => {
 
     it("throws when expires_in is negative", () => {
       expect(() => computeExpiresAt(-1)).toThrow(/expires_in/);
+    });
+  });
+
+  describe("createRefreshDedup", () => {
+    it("shares one underlying run() across concurrent calls for the same connectionId", async () => {
+      const run = vi.fn().mockResolvedValue("fresh-token");
+      const dedupe = createRefreshDedup<string>();
+
+      const [a, b] = await Promise.all([dedupe("conn-1", run), dedupe("conn-1", run)]);
+
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(a).toBe("fresh-token");
+      expect(b).toBe("fresh-token");
+    });
+
+    it("runs independently for different connectionIds", async () => {
+      const run1 = vi.fn().mockResolvedValue("token-1");
+      const run2 = vi.fn().mockResolvedValue("token-2");
+      const dedupe = createRefreshDedup<string>();
+
+      const [a, b] = await Promise.all([dedupe("conn-1", run1), dedupe("conn-2", run2)]);
+
+      expect(run1).toHaveBeenCalledTimes(1);
+      expect(run2).toHaveBeenCalledTimes(1);
+      expect(a).toBe("token-1");
+      expect(b).toBe("token-2");
+    });
+
+    it("runs run() again for a subsequent call after the prior call settled", async () => {
+      const run = vi.fn().mockResolvedValueOnce("token-1").mockResolvedValueOnce("token-2");
+      const dedupe = createRefreshDedup<string>();
+
+      const first = await dedupe("conn-1", run);
+      const second = await dedupe("conn-1", run);
+
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(first).toBe("token-1");
+      expect(second).toBe("token-2");
+    });
+
+    it("clears the in-flight entry when run() rejects, so the next call re-runs", async () => {
+      const run = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("refresh failed"))
+        .mockResolvedValueOnce("token-recovered");
+      const dedupe = createRefreshDedup<string>();
+
+      await expect(dedupe("conn-1", run)).rejects.toThrow("refresh failed");
+      const second = await dedupe("conn-1", run);
+
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(second).toBe("token-recovered");
     });
   });
 });

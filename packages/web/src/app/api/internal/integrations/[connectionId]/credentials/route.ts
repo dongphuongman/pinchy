@@ -6,7 +6,7 @@ import { integrationConnections } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { refreshAccessToken } from "@/lib/integrations/google-oauth";
-import { isTokenExpired } from "@/lib/integrations/oauth-token";
+import { isTokenExpired, createRefreshDedup } from "@/lib/integrations/oauth-token";
 import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
 import {
   refreshMicrosoftCredentials,
@@ -20,26 +20,9 @@ interface GoogleCredentials {
   [k: string]: unknown;
 }
 
-// Per-connectionId in-flight refresh tracker used by the Google refresh path.
-// When an access token has expired and multiple plugin calls arrive
-// concurrently, only the first caller runs `run()`; the rest await the same
-// Promise and observe the same fresh token. Without this, every concurrent
-// caller would burn a refresh against the provider with the same
-// refresh_token, and refresh-token rotation means all but one fail with
-// invalid_grant — corrupting the stored credential bundle. See issue #237.
-// The Microsoft equivalent lives in @/lib/integrations/microsoft-refresh,
-// shared with the integration test route.
-function createRefreshDedup<T>() {
-  const inFlight = new Map<string, Promise<T>>();
-  return function dedupe(connectionId: string, run: () => Promise<T>): Promise<T> {
-    const existing = inFlight.get(connectionId);
-    if (existing) return existing;
-    const promise = run().finally(() => inFlight.delete(connectionId));
-    inFlight.set(connectionId, promise);
-    return promise;
-  };
-}
-
+// Per-connectionId in-flight refresh tracker used by the Google refresh path
+// (see createRefreshDedup in oauth-token.ts for the full rationale / issue
+// #237). The Microsoft equivalent lives in @/lib/integrations/microsoft-refresh.
 const dedupeGoogleRefresh = createRefreshDedup<GoogleCredentials>();
 
 async function refreshGoogleCredentials(

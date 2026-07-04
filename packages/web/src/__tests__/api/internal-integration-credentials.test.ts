@@ -50,10 +50,17 @@ vi.mock("@/lib/integrations/microsoft-oauth", () => ({
 
 // The route imports isTokenExpired once from oauth-token and reuses it for
 // both the Google and Microsoft branches (see D14 cleanup). Mock it here
-// instead of via the provider-specific modules' re-exports.
-vi.mock("@/lib/integrations/oauth-token", () => ({
-  isTokenExpired: vi.fn().mockReturnValue(false),
-}));
+// instead of via the provider-specific modules' re-exports. createRefreshDedup
+// is kept as the real implementation (via importOriginal) since both the
+// route and microsoft-refresh.ts import it to construct their per-provider
+// dedup functions at module load time.
+vi.mock("@/lib/integrations/oauth-token", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/integrations/oauth-token")>();
+  return {
+    ...actual,
+    isTokenExpired: vi.fn().mockReturnValue(false),
+  };
+});
 
 vi.mock("@/lib/integrations/oauth-settings", () => ({
   getOAuthSettings: vi.fn().mockResolvedValue(null),

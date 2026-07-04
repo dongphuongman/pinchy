@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { encrypt } from "@/lib/encryption";
 import { refreshAccessToken as refreshMsAccessToken } from "@/lib/integrations/microsoft-oauth";
 import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { createRefreshDedup } from "@/lib/integrations/oauth-token";
 
 export interface MicrosoftCredentials {
   accessToken: string;
@@ -11,26 +12,6 @@ export interface MicrosoftCredentials {
   expiresAt: string;
   scope?: string;
   [k: string]: unknown;
-}
-
-// Per-connectionId in-flight refresh tracker, shared by both providers. When
-// an access token has expired and multiple plugin calls arrive concurrently,
-// only the first caller runs `run()`; the rest await the same Promise and
-// observe the same fresh token. Without this, every concurrent caller would
-// burn a refresh against the provider with the same refresh_token, and
-// refresh-token rotation means all but one fail with invalid_grant —
-// corrupting the stored credential bundle. See issue #237. Each provider
-// keeps its own Map (and Credentials type) since a connectionId's provider
-// never changes at runtime, but the single-flight bookkeeping is identical.
-function createRefreshDedup<T>() {
-  const inFlight = new Map<string, Promise<T>>();
-  return function dedupe(connectionId: string, run: () => Promise<T>): Promise<T> {
-    const existing = inFlight.get(connectionId);
-    if (existing) return existing;
-    const promise = run().finally(() => inFlight.delete(connectionId));
-    inFlight.set(connectionId, promise);
-    return promise;
-  };
 }
 
 // Thrown when a token refresh is actually required (the access token is
