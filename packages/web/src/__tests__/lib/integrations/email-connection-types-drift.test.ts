@@ -1,8 +1,9 @@
 // packages/web/src/__tests__/lib/integrations/email-connection-types-drift.test.ts
 //
-// Drift guard: three call sites (the templates-availability route, the
-// agent-settings email permission section, and the OpenClaw config builder)
-// used to each declare their own local list/Set of "which
+// Drift guard: these call sites (the templates-availability route, the
+// agent-settings email permission section, the OpenClaw config builder, and
+// the integrations settings page's app-configured lookup) used to each
+// declare their own local list/Set of "which
 // integration_connections.type values count as email" — and had drifted
 // (["google","microsoft"] vs ["google","microsoft","imap"]). They must now
 // all import EMAIL_CONNECTION_TYPES from
@@ -21,6 +22,7 @@ const CALL_SITES = [
   "../../../app/api/templates/route.ts",
   "../../../components/agent-settings-permissions.tsx",
   "../../../lib/openclaw-config/build.ts",
+  "../../../components/settings-integrations.tsx",
 ] as const;
 
 // Matches a local `const X = [...]` array or `new Set([...])` literal whose

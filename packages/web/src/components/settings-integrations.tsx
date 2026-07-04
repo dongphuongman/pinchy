@@ -41,6 +41,7 @@ import { BraveIcon, GoogleIcon, MicrosoftIcon, OdooIcon } from "./integration-ic
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
 import { getOAuthProvider, type OAuthProviderId } from "@/lib/integrations/oauth-providers";
+import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 import { apiGet } from "@/lib/api-client";
 
 function formatRelativeTime(dateString: string): string {
@@ -136,7 +137,7 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
   const appConfiguredRequestId = useRef(0);
 
   const fetchAppConfigured = useCallback(async (forConnections: IntegrationConnection[]) => {
-    const providers = (["google", "microsoft"] as const).filter((provider) =>
+    const providers = EMAIL_CONNECTION_TYPES.filter((provider) =>
       forConnections.some((conn) => conn.type === provider && conn.status === "active")
     );
     if (providers.length === 0) return;
