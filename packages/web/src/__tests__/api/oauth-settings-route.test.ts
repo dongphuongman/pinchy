@@ -167,6 +167,50 @@ describe("GET /api/settings/oauth", () => {
     expect(body.configured).toBe(false);
     expect(body.connectionCount).toBe(0);
   });
+
+  it("excludes pending placeholders from the connection count", async () => {
+    // Recursively scans a drizzle-orm SQL condition's queryChunks for the
+    // `ne(status, "pending")` exclusion — a `" <> "` operator chunk
+    // immediately followed by the literal value "pending". This lets the
+    // mock behave like a real filtered count instead of a hardcoded number,
+    // so the assertion is causally tied to the actual where-clause the route
+    // builds, not just a return-value stub.
+    function excludesPending(node: unknown, depth = 0): boolean {
+      if (depth > 10 || !node || typeof node !== "object") return false;
+      const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+      if (!Array.isArray(chunks)) return false;
+      return chunks.some((chunk, i) => {
+        if (!chunk || typeof chunk !== "object") return false;
+        if ("value" in chunk) {
+          const value = (chunk as { value: unknown }).value;
+          if (Array.isArray(value) && value[0] === " <> ") {
+            const next = chunks[i + 1] as { value?: unknown };
+            return next?.value === "pending";
+          }
+        }
+        return excludesPending(chunk, depth + 1);
+      });
+    }
+
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession);
+    vi.mocked(getOAuthSettings).mockResolvedValueOnce({
+      clientId: "my-client-id.apps.googleusercontent.com",
+      clientSecret: "GOCSPX-secret123",
+    });
+
+    // Simulate one real connection ("active") and one abandoned pending
+    // placeholder for the same provider: a real query filtered by
+    // `ne(status, "pending")` would only count the active row.
+    mockCountWhere.mockImplementation((condition: unknown) =>
+      Promise.resolve([{ value: excludesPending(condition) ? 1 : 2 }])
+    );
+
+    const req = new NextRequest("http://localhost/api/settings/oauth?provider=google");
+    const response = await GET(req);
+    const body = await response.json();
+
+    expect(body.connectionCount).toBe(1);
+  });
 });
 
 describe("GET /api/settings/oauth — microsoft provider", () => {

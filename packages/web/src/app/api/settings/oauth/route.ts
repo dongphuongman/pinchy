@@ -12,7 +12,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
-import { count, eq } from "drizzle-orm";
+import { and, count, eq, ne } from "drizzle-orm";
 
 const SUPPORTED_PROVIDERS = ["google", "microsoft"] as const;
 type SupportedProvider = (typeof SUPPORTED_PROVIDERS)[number];
@@ -50,7 +50,18 @@ async function countProviderConnections(provider: SupportedProvider): Promise<nu
   const rows = await db
     .select({ value: count() })
     .from(integrationConnections)
-    .where(eq(integrationConnections.type, connectionType));
+    .where(
+      and(
+        eq(integrationConnections.type, connectionType),
+        // Exclude half-finished OAuth flows: a "pending" row is created by
+        // /oauth/start and only cleaned up on the *next* /oauth/start, so an
+        // abandoned attempt would otherwise inflate the Reset/Disconnect
+        // dialog's "will disconnect N connected integration(s)" warning with
+        // a connection that was never actually live (mirrors the reasoning
+        // in settings-integrations.tsx).
+        ne(integrationConnections.status, "pending")
+      )
+    );
   return rows[0]?.value ?? 0;
 }
 
