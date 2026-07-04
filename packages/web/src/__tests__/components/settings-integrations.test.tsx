@@ -545,7 +545,13 @@ describe("SettingsIntegrations — derived 'app not configured' state", () => {
       expect(screen.getByText("user@outlook.com")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("App not configured")).toBeInTheDocument();
+    // The "App not configured" badge is derived from a SECOND async fetch
+    // (GET /api/settings/oauth?provider=…) that resolves independently of the
+    // connections list above, so wait for it to settle with findByText rather
+    // than asserting synchronously right after the email renders — otherwise
+    // the badge is still on its default "Connected" state and the assertion
+    // races the app-config fetch (intermittent CI failure).
+    expect(await screen.findByText("App not configured")).toBeInTheDocument();
     expect(screen.queryByText("Connected")).not.toBeInTheDocument();
 
     fetchSpy.mockRestore();
@@ -575,7 +581,11 @@ describe("SettingsIntegrations — derived 'app not configured' state", () => {
       expect(screen.getByText("user@gmail.com")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("App not configured")).toBeInTheDocument();
+    // See the Microsoft case above: the "App not configured" badge comes from a
+    // second, independently-resolving app-config fetch, so wait for it with
+    // findByText instead of asserting synchronously (avoids the CI race where
+    // the badge is still showing its default "Connected" state).
+    expect(await screen.findByText("App not configured")).toBeInTheDocument();
     expect(screen.queryByText("Connected")).not.toBeInTheDocument();
 
     fetchSpy.mockRestore();
