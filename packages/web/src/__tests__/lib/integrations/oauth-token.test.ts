@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { EXPIRY_BUFFER_MS, isTokenExpired } from "@/lib/integrations/oauth-token";
+import { EXPIRY_BUFFER_MS, isTokenExpired, computeExpiresAt } from "@/lib/integrations/oauth-token";
 
 describe("oauth-token", () => {
   // Freeze the clock: isTokenExpired() compares against a fresh Date.now() call,
@@ -47,6 +47,29 @@ describe("oauth-token", () => {
     it("returns false if expiresAt is well in the future", () => {
       const futureDate = new Date(Date.now() + 30 * 60_000).toISOString();
       expect(isTokenExpired(futureDate)).toBe(false);
+    });
+  });
+
+  describe("computeExpiresAt", () => {
+    it("returns an ISO string expires_in seconds from now", () => {
+      const result = computeExpiresAt(3600);
+      expect(result).toBe(new Date(Date.now() + 3600 * 1000).toISOString());
+    });
+
+    it("throws when expires_in is undefined (field missing from token response)", () => {
+      expect(() => computeExpiresAt(undefined)).toThrow(/expires_in/);
+    });
+
+    it("throws when expires_in is not a number", () => {
+      expect(() => computeExpiresAt("3600" as unknown as number)).toThrow(/expires_in/);
+    });
+
+    it("throws when expires_in is NaN", () => {
+      expect(() => computeExpiresAt(NaN)).toThrow(/expires_in/);
+    });
+
+    it("throws when expires_in is negative", () => {
+      expect(() => computeExpiresAt(-1)).toThrow(/expires_in/);
     });
   });
 });

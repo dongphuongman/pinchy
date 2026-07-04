@@ -1,5 +1,6 @@
 // MICROSOFT_OAUTH_BASE_URL allows E2E tests to redirect OAuth token refresh calls
 // to a local mock server instead of https://login.microsoftonline.com/
+import { computeExpiresAt } from "./oauth-token";
 
 export async function refreshAccessToken(opts: {
   tenantId: string;
@@ -37,6 +38,6 @@ export async function refreshAccessToken(opts: {
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
-    expiresAt: new Date(Date.now() + data.expires_in * 1000).toISOString(),
+    expiresAt: computeExpiresAt(data.expires_in),
   };
 }
