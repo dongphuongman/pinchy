@@ -111,6 +111,35 @@ describe("probeIntegrationCredentials", () => {
       expect(res.success).toBe(false);
       if (res.success) return;
       expect(res.reason).toMatch(/reconnect.*Microsoft/i);
+      expect(res.transient).toBeFalsy();
+    });
+
+    it("returns non-transient failure when Graph /me returns 403", async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 403 });
+      const res = await probeIntegrationCredentials("microsoft", validCreds);
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.reason).toMatch(/reconnect.*Microsoft/i);
+      expect(res.transient).toBeFalsy();
+    });
+
+    it("returns transient failure with a distinct reason when Graph /me returns 503", async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 503 });
+      const res = await probeIntegrationCredentials("microsoft", validCreds);
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+      expect(res.reason).toMatch(/503/);
+      expect(res.reason).not.toMatch(/reconnect/i);
+    });
+
+    it("returns transient failure when Graph /me returns 429", async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 429 });
+      const res = await probeIntegrationCredentials("microsoft", validCreds);
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
+      expect(res.reason).toMatch(/429/);
     });
 
     it("returns failure when accessToken is missing", async () => {
@@ -121,10 +150,12 @@ describe("probeIntegrationCredentials", () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it("returns failure on network error", async () => {
+    it("returns transient failure on network error", async () => {
       mockFetch.mockRejectedValue(new Error("network error"));
       const res = await probeIntegrationCredentials("microsoft", validCreds);
       expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.transient).toBe(true);
     });
   });
 

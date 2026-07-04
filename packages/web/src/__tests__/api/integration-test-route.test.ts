@@ -77,6 +77,24 @@ vi.mock("@/lib/integrations/odoo-schema", () => ({
   },
 }));
 
+const mockIsTokenExpired = vi.fn();
+vi.mock("@/lib/integrations/oauth-token", () => ({
+  isTokenExpired: (...args: unknown[]) => mockIsTokenExpired(...args),
+}));
+
+class FakeOAuthSettingsMissingError extends Error {
+  constructor(readonly provider: string) {
+    super(`${provider} OAuth settings not configured`);
+    this.name = "OAuthSettingsMissingError";
+  }
+}
+
+const mockRefreshMicrosoftCredentials = vi.fn();
+vi.mock("@/lib/integrations/microsoft-refresh", () => ({
+  refreshMicrosoftCredentials: (...args: unknown[]) => mockRefreshMicrosoftCredentials(...args),
+  OAuthSettingsMissingError: FakeOAuthSettingsMissingError,
+}));
+
 import { NextRequest } from "next/server";
 
 const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
@@ -97,6 +115,28 @@ const decryptedOdooCreds = {
   login: "admin",
   apiKey: "secret-key",
   uid: 2,
+};
+
+const mockMicrosoftConnection = {
+  id: "conn-ms",
+  type: "microsoft",
+  name: "Test Mailbox",
+  credentials: "encrypted-ms-creds",
+  status: "active",
+  createdAt: new Date("2026-01-01"),
+  updatedAt: new Date("2026-01-01"),
+};
+
+const staleMicrosoftCreds = {
+  accessToken: "stale-access-token",
+  refreshToken: "stale-refresh-token",
+  expiresAt: new Date(Date.now() - 60_000).toISOString(),
+};
+
+const refreshedMicrosoftCreds = {
+  accessToken: "refreshed-access-token",
+  refreshToken: "refreshed-refresh-token",
+  expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
 };
 
 function makeRequest(path: string, options?: RequestInit) {
@@ -154,5 +194,112 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       actor: { type: "user", id: "user-1" },
     });
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+  });
+
+  describe("Microsoft: pre-refresh expired tokens + transient-failure handling", () => {
+    beforeEach(() => {
+      mockSelectWhere.mockResolvedValue([mockMicrosoftConnection]);
+      mockDecrypt.mockReturnValue(JSON.stringify(staleMicrosoftCreds));
+      mockIsTokenExpired.mockReturnValue(false);
+    });
+
+    it("refreshes an expired Microsoft access token before probing and does not flip status on success", async () => {
+      mockIsTokenExpired.mockReturnValue(true);
+      mockRefreshMicrosoftCredentials.mockResolvedValue(refreshedMicrosoftCreds);
+      mockProbeIntegrationCredentials.mockResolvedValue({ success: true });
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-ms/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-ms" }) }
+      );
+      const body = await response.json();
+
+      expect(mockRefreshMicrosoftCredentials).toHaveBeenCalledWith("conn-ms", staleMicrosoftCreds);
+      // The probe must run against the freshly refreshed credentials, not the stale ones.
+      expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+        "microsoft",
+        expect.objectContaining({ accessToken: "refreshed-access-token" })
+      );
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(true);
+      expect(mockClearIntegrationAuthError).toHaveBeenCalledWith({
+        connectionId: "conn-ms",
+        actor: { type: "user", id: "user-1" },
+      });
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+    });
+
+    it("does not flip status to auth_failed when the probe reports a transient failure", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({
+        success: false,
+        transient: true,
+        reason: "Microsoft Graph returned 503 — temporary error, try again.",
+      });
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-ms/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-ms" }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(false);
+      expect(body.error).toMatch(/temporary error/i);
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+      expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+    });
+
+    it("still flips status to auth_failed when the probe reports a genuine (non-transient) auth failure", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({
+        success: false,
+        reason: "Access token expired or revoked. Please reconnect to Microsoft.",
+      });
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-ms/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-ms" }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(false);
+      expect(mockSetIntegrationAuthFailed).toHaveBeenCalledWith({
+        connectionId: "conn-ms",
+        reason: "Access token expired or revoked. Please reconnect to Microsoft.",
+        actor: { type: "user", id: "user-1" },
+      });
+    });
+
+    it("flips status to auth_failed when the OAuth app is missing during a required refresh", async () => {
+      mockIsTokenExpired.mockReturnValue(true);
+      mockRefreshMicrosoftCredentials.mockRejectedValue(
+        new FakeOAuthSettingsMissingError("Microsoft")
+      );
+
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-ms/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-ms" }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(false);
+      expect(body.error).toMatch(/OAuth app is not configured/i);
+      expect(mockSetIntegrationAuthFailed).toHaveBeenCalledWith({
+        connectionId: "conn-ms",
+        reason: expect.stringMatching(/OAuth app is not configured/i),
+        actor: { type: "user", id: "user-1" },
+      });
+      // Must not have probed with stale credentials once we know the OAuth app is gone.
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+    });
   });
 });

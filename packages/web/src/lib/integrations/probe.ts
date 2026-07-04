@@ -8,10 +8,16 @@ import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
  *
  * On success may return `freshCredentials` — values resolved during the probe
  * that the caller should persist (e.g. Odoo's `uid` after a `login` change).
+ *
+ * On failure, `transient` distinguishes a genuine auth problem (bad/expired
+ * credentials — the connection needs a reconnect) from a temporary provider
+ * hiccup (5xx, 429, network error — the credentials are still fine, retry
+ * later). Callers must not flip a connection to `auth_failed` on a transient
+ * result.
  */
 export type ProbeResult =
   | { success: true; freshCredentials?: Record<string, unknown> }
-  | { success: false; reason: string };
+  | { success: false; reason: string; transient?: boolean };
 
 export async function probeIntegrationCredentials(
   type: string,
@@ -66,12 +72,26 @@ export async function probeIntegrationCredentials(
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (res.ok) return { success: true };
+      if (res.status === 401 || res.status === 403) {
+        return {
+          success: false,
+          reason: "Access token expired or revoked. Please reconnect to Microsoft.",
+        };
+      }
+      // Any other non-2xx (5xx, 429, unexpected 4xx) is a temporary provider
+      // hiccup, not evidence the credentials are bad — do not report this as
+      // an auth failure.
       return {
         success: false,
-        reason: "Access token expired or revoked. Please reconnect to Microsoft.",
+        transient: true,
+        reason: `Microsoft Graph returned ${res.status} — temporary error, try again.`,
       };
     } catch {
-      return { success: false, reason: "Could not reach Microsoft. Please check your connection." };
+      return {
+        success: false,
+        transient: true,
+        reason: "Could not reach Microsoft. Please check your connection.",
+      };
     }
   }
 
