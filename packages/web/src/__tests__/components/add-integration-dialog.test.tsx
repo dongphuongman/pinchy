@@ -9,6 +9,18 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
+// The OAuth GET status check (ProviderConnectStep) goes through apiGet;
+// everything else in this file (list-databases, etc.) still uses raw fetch.
+vi.mock("@/lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-client")>();
+  return {
+    ...actual,
+    apiGet: vi.fn(),
+  };
+});
+
+import { apiGet } from "@/lib/api-client";
+
 function resolveUrl(url: string | URL | Request): string {
   return typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
 }
@@ -146,8 +158,6 @@ describe("AddIntegrationDialog", () => {
   });
 
   describe("Google OAuth type", () => {
-    let googleFetchSpy: ReturnType<typeof vi.spyOn>;
-
     async function selectGoogleType(user: ReturnType<typeof userEvent.setup>) {
       const googleButton = screen.getByText("Google");
       await user.click(googleButton);
@@ -166,10 +176,11 @@ describe("AddIntegrationDialog", () => {
         value: { ...window.location, protocol: "https:" },
       });
 
-      googleFetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: true, clientId: "existing-id" }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({
+        configured: true,
+        clientId: "existing-id",
+        connectionCount: 0,
+      });
 
       const user = userEvent.setup();
       render(<AddIntegrationDialog {...defaultProps} />);
@@ -179,7 +190,6 @@ describe("AddIntegrationDialog", () => {
         expect(screen.getByRole("link", { name: /connect google account/i })).toBeInTheDocument();
       });
 
-      googleFetchSpy.mockRestore();
       Object.defineProperty(window, "location", {
         writable: true,
         value: { ...window.location, protocol: originalProtocol },
@@ -193,10 +203,11 @@ describe("AddIntegrationDialog", () => {
         value: { ...window.location, protocol: "https:" },
       });
 
-      googleFetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: true, clientId: "existing-id" }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({
+        configured: true,
+        clientId: "existing-id",
+        connectionCount: 0,
+      });
 
       const user = userEvent.setup();
       render(<AddIntegrationDialog {...defaultProps} />);
@@ -207,7 +218,6 @@ describe("AddIntegrationDialog", () => {
         expect(link).toHaveAttribute("href", "/api/integrations/oauth/start");
       });
 
-      googleFetchSpy.mockRestore();
       Object.defineProperty(window, "location", {
         writable: true,
         value: { ...window.location, protocol: originalProtocol },
@@ -221,10 +231,7 @@ describe("AddIntegrationDialog", () => {
         value: { ...window.location, protocol: "https:" },
       });
 
-      googleFetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: false, clientId: "" }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({ configured: false, clientId: "", connectionCount: 0 });
 
       const user = userEvent.setup();
       render(<AddIntegrationDialog {...defaultProps} />);
@@ -234,7 +241,6 @@ describe("AddIntegrationDialog", () => {
         expect(screen.getByText(/Step 1 of 2/)).toBeInTheDocument();
       });
 
-      googleFetchSpy.mockRestore();
       Object.defineProperty(window, "location", {
         writable: true,
         value: { ...window.location, protocol: originalProtocol },
@@ -259,10 +265,11 @@ describe("AddIntegrationDialog", () => {
         value: { ...window.location, protocol: "https:" },
       });
 
-      googleFetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: true, clientId: "existing-id" }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({
+        configured: true,
+        clientId: "existing-id",
+        connectionCount: 0,
+      });
 
       const user = userEvent.setup();
       render(<AddIntegrationDialog {...defaultProps} />);
@@ -275,7 +282,6 @@ describe("AddIntegrationDialog", () => {
       expect(screen.queryByText(/HTTPS is required/)).not.toBeInTheDocument();
 
       // Restore
-      googleFetchSpy.mockRestore();
       Object.defineProperty(window, "location", {
         writable: true,
         value: { ...window.location, protocol: originalProtocol },
@@ -386,14 +392,10 @@ describe("AddIntegrationDialog", () => {
   // descriptor-driven ProviderConnectStep. These cases pin that shared step so a
   // future change cannot quietly diverge the two providers' setup forms.
   describe("shared ProviderConnectStep (Google + Microsoft)", () => {
-    let sharedFetchSpy: ReturnType<typeof vi.spyOn>;
     let originalProtocol: string;
 
     beforeEach(() => {
-      sharedFetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: false }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({ configured: false, clientId: "", connectionCount: 0 });
       // Google's step gates on HTTPS; run both providers under https.
       originalProtocol = window.location.protocol;
       Object.defineProperty(window, "location", {
@@ -403,7 +405,6 @@ describe("AddIntegrationDialog", () => {
     });
 
     afterEach(() => {
-      sharedFetchSpy.mockRestore();
       Object.defineProperty(window, "location", {
         writable: true,
         value: { ...window.location, protocol: originalProtocol },

@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import {
   getOAuthSettings,
@@ -10,6 +9,7 @@ import { getOAuthProvider } from "@/lib/integrations/oauth-providers";
 import { validateMicrosoftTenant } from "@/lib/integrations/oauth-preflight";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
+import { saveOAuthSchema } from "@/lib/schemas/oauth-settings";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { and, count, eq, ne } from "drizzle-orm";
@@ -20,24 +20,6 @@ type SupportedProvider = (typeof SUPPORTED_PROVIDERS)[number];
 function isSupportedProvider(value: unknown): value is SupportedProvider {
   return typeof value === "string" && SUPPORTED_PROVIDERS.includes(value as SupportedProvider);
 }
-
-const saveGoogleOAuthSchema = z.object({
-  provider: z.literal("google"),
-  clientId: z.string().min(1),
-  clientSecret: z.string().min(1).optional(),
-});
-
-const saveMicrosoftOAuthSchema = z.object({
-  provider: z.literal("microsoft"),
-  clientId: z.string().min(1),
-  clientSecret: z.string().min(1).optional(),
-  tenantId: z.string().min(1).optional(),
-});
-
-const saveOAuthSchema = z.discriminatedUnion("provider", [
-  saveGoogleOAuthSchema,
-  saveMicrosoftOAuthSchema,
-]);
 
 /**
  * Count the mailbox connections that depend on a provider's OAuth app. Used to

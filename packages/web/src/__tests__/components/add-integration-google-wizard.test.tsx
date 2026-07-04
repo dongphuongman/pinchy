@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
@@ -15,9 +15,17 @@ vi.mock("@/lib/integrations/odoo-sync", () => ({
   getAccessibleCategoryLabels: vi.fn(() => []),
 }));
 
-import { AddIntegrationDialog } from "@/components/add-integration-dialog";
+vi.mock("@/lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-client")>();
+  return {
+    ...actual,
+    apiGet: vi.fn(),
+    apiPost: vi.fn(),
+  };
+});
 
-let fetchSpy: ReturnType<typeof vi.spyOn>;
+import { AddIntegrationDialog } from "@/components/add-integration-dialog";
+import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 
 function renderDialog() {
   return render(<AddIntegrationDialog open={true} onOpenChange={vi.fn()} onSuccess={vi.fn()} />);
@@ -30,11 +38,8 @@ async function selectGoogle(user: ReturnType<typeof userEvent.setup>) {
 
 describe("Add Integration Dialog — Google flow", () => {
   beforeEach(() => {
-    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
-  });
-
-  afterEach(() => {
-    fetchSpy.mockRestore();
+    vi.mocked(apiGet).mockReset();
+    vi.mocked(apiPost).mockReset();
   });
 
   describe("when HTTPS is not available", () => {
@@ -59,10 +64,7 @@ describe("Add Integration Dialog — Google flow", () => {
   describe("when HTTPS is available but OAuth is not configured", () => {
     beforeEach(() => {
       vi.stubGlobal("location", { ...window.location, protocol: "https:" });
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: false, clientId: "" }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({ configured: false, clientId: "" });
     });
 
     afterEach(() => {
@@ -107,20 +109,16 @@ describe("Add Integration Dialog — Google flow", () => {
       await user.type(screen.getByLabelText("Client ID"), "test-client-id");
       await user.type(screen.getByLabelText("Client Secret"), "test-secret");
 
-      fetchSpy.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(apiPost).mockResolvedValueOnce({ success: true });
 
       await user.click(screen.getByRole("button", { name: /Save & Continue/i }));
 
       await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledWith(
-          "/api/settings/oauth",
-          expect.objectContaining({
-            method: "POST",
-          })
-        );
+        expect(apiPost).toHaveBeenCalledWith("/api/settings/oauth", {
+          provider: "google",
+          clientId: "test-client-id",
+          clientSecret: "test-secret",
+        });
       });
 
       await waitFor(() => {
@@ -140,10 +138,7 @@ describe("Add Integration Dialog — Google flow", () => {
       await user.type(screen.getByLabelText("Client ID"), "bad-id");
       await user.type(screen.getByLabelText("Client Secret"), "bad-secret");
 
-      fetchSpy.mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({ error: "Invalid client credentials" }),
-      } as Response);
+      vi.mocked(apiPost).mockRejectedValueOnce(new ApiError(400, "Invalid client credentials"));
 
       await user.click(screen.getByRole("button", { name: /Save & Continue/i }));
 
@@ -159,10 +154,7 @@ describe("Add Integration Dialog — Google flow", () => {
   describe("when HTTPS is available and OAuth is already configured", () => {
     beforeEach(() => {
       vi.stubGlobal("location", { ...window.location, protocol: "https:" });
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: true, clientId: "existing-client-id" }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({ configured: true, clientId: "existing-client-id" });
     });
 
     afterEach(() => {
@@ -187,10 +179,7 @@ describe("Add Integration Dialog — Google flow", () => {
 
     beforeEach(() => {
       vi.stubGlobal("location", { ...window.location, protocol: "https:" });
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: false, clientId: "" }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({ configured: false, clientId: "" });
 
       // Mock clipboard API
       clipboardWriteTextSpy = vi

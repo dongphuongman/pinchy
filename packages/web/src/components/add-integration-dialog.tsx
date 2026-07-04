@@ -43,6 +43,15 @@ import {
   type OAuthProviderDescriptor,
   type OAuthProviderId,
 } from "@/lib/integrations/oauth-providers";
+import { apiGet, apiPost, ApiError } from "@/lib/api-client";
+import type { SaveOAuthRequest } from "@/lib/schemas/oauth-settings";
+
+interface OAuthConfigResponse {
+  configured: boolean;
+  clientId: string;
+  tenantId?: string;
+  connectionCount: number;
+}
 
 interface IntegrationType {
   id: string;
@@ -233,8 +242,9 @@ function ProviderConnectStep({
     let cancelled = false;
     async function check() {
       try {
-        const res = await fetch(`/api/settings/oauth?provider=${descriptor.id}`);
-        const data = await res.json();
+        const data = await apiGet<OAuthConfigResponse>(
+          `/api/settings/oauth?provider=${descriptor.id}`
+        );
         if (!cancelled) setOauthStatus(data.configured ? "configured" : "not-configured");
       } catch {
         if (!cancelled) setOauthStatus("not-configured");
@@ -246,34 +256,37 @@ function ProviderConnectStep({
     };
   }, [descriptor.id, blockedByInsecure]);
 
+  function buildSaveBody(): SaveOAuthRequest {
+    const trimmedClientId = clientId.trim();
+    const trimmedSecret = clientSecret.trim();
+
+    if (descriptor.id === "microsoft") {
+      const trimmedTenant = tenantId.trim();
+      return {
+        provider: "microsoft",
+        clientId: trimmedClientId,
+        clientSecret: trimmedSecret,
+        ...(descriptor.hasTenant && trimmedTenant ? { tenantId: trimmedTenant } : {}),
+      };
+    }
+
+    return { provider: "google", clientId: trimmedClientId, clientSecret: trimmedSecret };
+  }
+
   async function handleSaveOAuth() {
     setSaving(true);
     setSaveError(null);
     try {
-      const body: Record<string, string> = {
-        provider: descriptor.id,
-        clientId: clientId.trim(),
-        clientSecret: clientSecret.trim(),
-      };
-      if (descriptor.hasTenant && tenantId.trim()) {
-        body.tenantId = tenantId.trim();
-      }
-      const res = await fetch("/api/settings/oauth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setSaveError(data.error || "Failed to save OAuth credentials");
-        setSaving(false);
-        return;
-      }
+      await apiPost("/api/settings/oauth", buildSaveBody());
       setJustConfigured(true);
       setOauthStatus("configured");
       setSaving(false);
-    } catch {
-      setSaveError("Failed to save OAuth credentials");
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setSaveError(err.message);
+      } else {
+        setSaveError("Failed to save OAuth credentials");
+      }
       setSaving(false);
     }
   }

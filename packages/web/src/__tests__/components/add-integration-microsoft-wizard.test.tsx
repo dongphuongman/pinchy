@@ -11,9 +11,17 @@ vi.mock("@/lib/integrations/odoo-url", () => ({
   generateConnectionName: vi.fn(() => "Test Connection"),
 }));
 
-import { AddIntegrationDialog } from "@/components/add-integration-dialog";
+vi.mock("@/lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-client")>();
+  return {
+    ...actual,
+    apiGet: vi.fn(),
+    apiPost: vi.fn(),
+  };
+});
 
-let fetchSpy: ReturnType<typeof vi.spyOn>;
+import { AddIntegrationDialog } from "@/components/add-integration-dialog";
+import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 
 function renderDialog() {
   return render(<AddIntegrationDialog open={true} onOpenChange={vi.fn()} onSuccess={vi.fn()} />);
@@ -26,21 +34,18 @@ async function selectMicrosoft(user: ReturnType<typeof userEvent.setup>) {
 
 describe("Add Integration Dialog — Microsoft flow", () => {
   beforeEach(() => {
-    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
+    vi.mocked(apiGet).mockReset();
+    vi.mocked(apiPost).mockReset();
     vi.stubGlobal("location", { ...window.location, protocol: "https:" });
   });
 
   afterEach(() => {
-    fetchSpy.mockRestore();
     vi.unstubAllGlobals();
   });
 
   describe("Microsoft step: shows OAuth setup form when not configured", () => {
     beforeEach(() => {
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: false }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({ configured: false });
     });
 
     it("shows OAuth setup form with Client ID and Client Secret fields", async () => {
@@ -92,10 +97,7 @@ describe("Add Integration Dialog — Microsoft flow", () => {
 
   describe("Microsoft step: tenant ID is optional with helper text", () => {
     beforeEach(() => {
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: false }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({ configured: false });
     });
 
     it("shows Tenant ID field", async () => {
@@ -140,10 +142,7 @@ describe("Add Integration Dialog — Microsoft flow", () => {
 
   describe("Microsoft step: Connect button links to /api/integrations/oauth/start?provider=microsoft", () => {
     beforeEach(() => {
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: true }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({ configured: true });
     });
 
     it("shows Connect Microsoft Account link when OAuth is configured", async () => {
@@ -187,10 +186,7 @@ describe("Add Integration Dialog — Microsoft flow", () => {
 
   describe("Microsoft step: save OAuth credentials flow", () => {
     beforeEach(() => {
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        json: async () => ({ configured: false }),
-      } as Response);
+      vi.mocked(apiGet).mockResolvedValue({ configured: false });
     });
 
     it("POSTs to /api/settings/oauth with provider=microsoft, clientId, clientSecret, tenantId", async () => {
@@ -206,33 +202,18 @@ describe("Add Integration Dialog — Microsoft flow", () => {
       await user.type(screen.getByLabelText("Client Secret"), "my-client-secret");
       await user.type(screen.getByLabelText("Tenant ID"), "my-tenant-id");
 
-      fetchSpy.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(apiPost).mockResolvedValueOnce({ success: true });
 
       await user.click(screen.getByRole("button", { name: /Save & Continue/i }));
 
       await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledWith(
-          "/api/settings/oauth",
-          expect.objectContaining({
-            method: "POST",
-            body: expect.stringContaining('"provider":"microsoft"'),
-          })
-        );
+        expect(apiPost).toHaveBeenCalledWith("/api/settings/oauth", {
+          provider: "microsoft",
+          clientId: "my-client-id",
+          clientSecret: "my-client-secret",
+          tenantId: "my-tenant-id",
+        });
       });
-
-      const callBody = JSON.parse(
-        (
-          fetchSpy.mock.calls.find(
-            (c) => c[0] === "/api/settings/oauth" && (c[1] as RequestInit)?.method === "POST"
-          )?.[1] as RequestInit
-        )?.body as string
-      );
-      expect(callBody.clientId).toBe("my-client-id");
-      expect(callBody.clientSecret).toBe("my-client-secret");
-      expect(callBody.tenantId).toBe("my-tenant-id");
     });
 
     it("shows Connect Microsoft Account after saving credentials", async () => {
@@ -247,10 +228,7 @@ describe("Add Integration Dialog — Microsoft flow", () => {
       await user.type(screen.getByLabelText("Client ID"), "test-client-id");
       await user.type(screen.getByLabelText("Client Secret"), "test-secret");
 
-      fetchSpy.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(apiPost).mockResolvedValueOnce({ success: true });
 
       await user.click(screen.getByRole("button", { name: /Save & Continue/i }));
 
@@ -271,10 +249,7 @@ describe("Add Integration Dialog — Microsoft flow", () => {
       await user.type(screen.getByLabelText("Client ID"), "bad-id");
       await user.type(screen.getByLabelText("Client Secret"), "bad-secret");
 
-      fetchSpy.mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({ error: "Invalid Microsoft credentials" }),
-      } as Response);
+      vi.mocked(apiPost).mockRejectedValueOnce(new ApiError(400, "Invalid Microsoft credentials"));
 
       await user.click(screen.getByRole("button", { name: /Save & Continue/i }));
 

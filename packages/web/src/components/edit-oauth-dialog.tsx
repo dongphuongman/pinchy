@@ -14,6 +14,15 @@ import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { getOAuthProvider, type OAuthProviderId } from "@/lib/integrations/oauth-providers";
+import { apiGet, apiPost, ApiError } from "@/lib/api-client";
+import type { SaveOAuthRequest } from "@/lib/schemas/oauth-settings";
+
+interface OAuthConfigResponse {
+  configured: boolean;
+  clientId: string;
+  tenantId?: string;
+  connectionCount: number;
+}
 
 interface EditOAuthDialogProps {
   provider: OAuthProviderId;
@@ -48,8 +57,7 @@ export function EditOAuthDialog({ provider, open, onOpenChange }: EditOAuthDialo
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    fetch(`/api/settings/oauth?provider=${provider}`)
-      .then((res) => res.json())
+    apiGet<OAuthConfigResponse>(`/api/settings/oauth?provider=${provider}`)
       .then((data) => {
         if (cancelled) return;
         setClientId(data.clientId || "");
@@ -64,34 +72,38 @@ export function EditOAuthDialog({ provider, open, onOpenChange }: EditOAuthDialo
     };
   }, [open, provider]);
 
+  function buildSaveBody(): SaveOAuthRequest {
+    const trimmedClientId = clientId.trim();
+    const trimmedSecret = clientSecret.trim();
+    const clientSecretField = trimmedSecret.length > 0 ? { clientSecret: trimmedSecret } : {};
+
+    if (provider === "microsoft") {
+      const trimmedTenant = tenantId.trim();
+      const tenantField = hasTenant && trimmedTenant.length > 0 ? { tenantId: trimmedTenant } : {};
+      return {
+        provider: "microsoft",
+        clientId: trimmedClientId,
+        ...clientSecretField,
+        ...tenantField,
+      };
+    }
+
+    return { provider: "google", clientId: trimmedClientId, ...clientSecretField };
+  }
+
   async function handleSave() {
     setSaving(true);
     setError("");
     try {
-      const trimmedTenant = tenantId.trim();
-      const trimmedSecret = clientSecret.trim();
-      const body: {
-        provider: OAuthProviderId;
-        clientId: string;
-        clientSecret?: string;
-        tenantId?: string;
-      } = { provider, clientId: clientId.trim() };
-      if (trimmedSecret.length > 0) body.clientSecret = trimmedSecret;
-      if (hasTenant && trimmedTenant.length > 0) body.tenantId = trimmedTenant;
-      const res = await fetch("/api/settings/oauth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error || "Failed to save");
-        return;
-      }
+      await apiPost("/api/settings/oauth", buildSaveBody());
       toast.success(`${label} OAuth settings saved`);
       onOpenChange(false);
-    } catch {
-      setError("Failed to save");
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+      } else {
+        setError("Failed to save");
+      }
     } finally {
       setSaving(false);
     }

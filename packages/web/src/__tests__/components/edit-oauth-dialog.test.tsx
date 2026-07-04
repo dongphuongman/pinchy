@@ -1,29 +1,34 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
+vi.mock("@/lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-client")>();
+  return {
+    ...actual,
+    apiGet: vi.fn(),
+    apiPost: vi.fn(),
+  };
+});
+
 import { EditOAuthDialog } from "@/components/edit-oauth-dialog";
 import { toast } from "sonner";
-
-let fetchSpy: ReturnType<typeof vi.spyOn>;
+import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 
 describe("EditOAuthDialog", () => {
   beforeEach(() => {
-    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
-  });
-
-  afterEach(() => {
-    fetchSpy.mockRestore();
+    vi.mocked(apiGet).mockReset();
+    vi.mocked(apiPost).mockReset();
   });
 
   it("loads and displays current Client ID on open", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "existing-id.apps.googleusercontent.com" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({
+      configured: true,
+      clientId: "existing-id.apps.googleusercontent.com",
+    });
 
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={vi.fn()} />);
 
@@ -35,23 +40,17 @@ describe("EditOAuthDialog", () => {
   });
 
   it("fetches settings for the given provider", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "id" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({ configured: true, clientId: "id" });
 
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={vi.fn()} />);
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith("/api/settings/oauth?provider=google");
+      expect(apiGet).toHaveBeenCalledWith("/api/settings/oauth?provider=google");
     });
   });
 
   it("shows note that changes apply to all Google integrations", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "id" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({ configured: true, clientId: "id" });
 
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={vi.fn()} />);
 
@@ -65,10 +64,7 @@ describe("EditOAuthDialog", () => {
   });
 
   it("uses provider-generic copy in the description", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "id" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({ configured: true, clientId: "id" });
 
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={vi.fn()} />);
 
@@ -80,10 +76,7 @@ describe("EditOAuthDialog", () => {
   });
 
   it("does not render a Tenant ID field for google", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "id" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({ configured: true, clientId: "id" });
 
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={vi.fn()} />);
 
@@ -97,10 +90,7 @@ describe("EditOAuthDialog", () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "old-id" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValueOnce({ configured: true, clientId: "old-id" });
 
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={onOpenChange} />);
 
@@ -112,25 +102,16 @@ describe("EditOAuthDialog", () => {
     await user.type(screen.getByLabelText("Client ID"), "new-id");
     await user.type(screen.getByLabelText("Client Secret"), "new-secret");
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(apiPost).mockResolvedValueOnce({ success: true });
 
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/settings/oauth",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            provider: "google",
-            clientId: "new-id",
-            clientSecret: "new-secret",
-          }),
-        })
-      );
+      expect(apiPost).toHaveBeenCalledWith("/api/settings/oauth", {
+        provider: "google",
+        clientId: "new-id",
+        clientSecret: "new-secret",
+      });
     });
 
     await waitFor(() => {
@@ -143,10 +124,7 @@ describe("EditOAuthDialog", () => {
   it("shows inline error when save fails", async () => {
     const user = userEvent.setup();
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "old-id" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValueOnce({ configured: true, clientId: "old-id" });
 
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={vi.fn()} />);
 
@@ -156,10 +134,7 @@ describe("EditOAuthDialog", () => {
 
     await user.type(screen.getByLabelText("Client Secret"), "some-secret");
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid credentials" }),
-    } as Response);
+    vi.mocked(apiPost).mockRejectedValueOnce(new ApiError(400, "Invalid credentials"));
 
     await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -171,10 +146,7 @@ describe("EditOAuthDialog", () => {
   it("enables save when Client ID is filled and Client Secret is left blank", async () => {
     // The secret is optional on edit — an empty field means "keep the
     // current secret", matching edit-credentials-dialog.tsx's pattern.
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "id" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({ configured: true, clientId: "id" });
 
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={vi.fn()} />);
 
@@ -184,10 +156,7 @@ describe("EditOAuthDialog", () => {
   });
 
   it("disables save when Client ID is empty", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({ configured: true, clientId: "" });
 
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={vi.fn()} />);
 
@@ -200,10 +169,7 @@ describe("EditOAuthDialog", () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "old-id" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValueOnce({ configured: true, clientId: "old-id" });
 
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={onOpenChange} />);
 
@@ -214,24 +180,15 @@ describe("EditOAuthDialog", () => {
     await user.clear(screen.getByLabelText("Client ID"));
     await user.type(screen.getByLabelText("Client ID"), "new-id");
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(apiPost).mockResolvedValueOnce({ success: true });
 
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/settings/oauth",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            provider: "google",
-            clientId: "new-id",
-          }),
-        })
-      );
+      expect(apiPost).toHaveBeenCalledWith("/api/settings/oauth", {
+        provider: "google",
+        clientId: "new-id",
+      });
     });
 
     await waitFor(() => {
@@ -242,10 +199,7 @@ describe("EditOAuthDialog", () => {
   });
 
   it("shows a hint that the secret field can be left blank to keep the current secret", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "id" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({ configured: true, clientId: "id" });
 
     render(<EditOAuthDialog provider="google" open={true} onOpenChange={vi.fn()} />);
 
@@ -260,31 +214,22 @@ describe("EditOAuthDialog", () => {
 
 describe("EditOAuthDialog — microsoft provider", () => {
   beforeEach(() => {
-    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
-  });
-
-  afterEach(() => {
-    fetchSpy.mockRestore();
+    vi.mocked(apiGet).mockReset();
+    vi.mocked(apiPost).mockReset();
   });
 
   it("fetches settings for the microsoft provider", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "ms-id", tenantId: "" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({ configured: true, clientId: "ms-id", tenantId: "" });
 
     render(<EditOAuthDialog provider="microsoft" open={true} onOpenChange={vi.fn()} />);
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith("/api/settings/oauth?provider=microsoft");
+      expect(apiGet).toHaveBeenCalledWith("/api/settings/oauth?provider=microsoft");
     });
   });
 
   it("renders Client ID, Client Secret and Tenant ID fields", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "ms-id", tenantId: "" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({ configured: true, clientId: "ms-id", tenantId: "" });
 
     render(<EditOAuthDialog provider="microsoft" open={true} onOpenChange={vi.fn()} />);
 
@@ -296,10 +241,7 @@ describe("EditOAuthDialog — microsoft provider", () => {
   });
 
   it("uses provider-generic copy for microsoft", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "ms-id", tenantId: "" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({ configured: true, clientId: "ms-id", tenantId: "" });
 
     render(<EditOAuthDialog provider="microsoft" open={true} onOpenChange={vi.fn()} />);
 
@@ -311,10 +253,11 @@ describe("EditOAuthDialog — microsoft provider", () => {
   });
 
   it("prefills the existing tenantId from the GET response", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "ms-id", tenantId: "my-tenant" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValue({
+      configured: true,
+      clientId: "ms-id",
+      tenantId: "my-tenant",
+    });
 
     render(<EditOAuthDialog provider="microsoft" open={true} onOpenChange={vi.fn()} />);
 
@@ -327,10 +270,11 @@ describe("EditOAuthDialog — microsoft provider", () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "old-ms-id", tenantId: "old-tenant" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValueOnce({
+      configured: true,
+      clientId: "old-ms-id",
+      tenantId: "old-tenant",
+    });
 
     render(<EditOAuthDialog provider="microsoft" open={true} onOpenChange={onOpenChange} />);
 
@@ -344,26 +288,17 @@ describe("EditOAuthDialog — microsoft provider", () => {
     await user.clear(screen.getByLabelText(/Tenant ID/i));
     await user.type(screen.getByLabelText(/Tenant ID/i), "new-tenant");
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(apiPost).mockResolvedValueOnce({ success: true });
 
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/settings/oauth",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            provider: "microsoft",
-            clientId: "new-ms-id",
-            clientSecret: "new-ms-secret",
-            tenantId: "new-tenant",
-          }),
-        })
-      );
+      expect(apiPost).toHaveBeenCalledWith("/api/settings/oauth", {
+        provider: "microsoft",
+        clientId: "new-ms-id",
+        clientSecret: "new-ms-secret",
+        tenantId: "new-tenant",
+      });
     });
 
     await waitFor(() => {
@@ -374,10 +309,11 @@ describe("EditOAuthDialog — microsoft provider", () => {
   it("omits tenantId from the POST body when left blank", async () => {
     const user = userEvent.setup();
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ configured: true, clientId: "old-ms-id", tenantId: "" }),
-    } as Response);
+    vi.mocked(apiGet).mockResolvedValueOnce({
+      configured: true,
+      clientId: "old-ms-id",
+      tenantId: "",
+    });
 
     render(<EditOAuthDialog provider="microsoft" open={true} onOpenChange={vi.fn()} />);
 
@@ -387,25 +323,16 @@ describe("EditOAuthDialog — microsoft provider", () => {
 
     await user.type(screen.getByLabelText("Client Secret"), "new-ms-secret");
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(apiPost).mockResolvedValueOnce({ success: true });
 
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/settings/oauth",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            provider: "microsoft",
-            clientId: "old-ms-id",
-            clientSecret: "new-ms-secret",
-          }),
-        })
-      );
+      expect(apiPost).toHaveBeenCalledWith("/api/settings/oauth", {
+        provider: "microsoft",
+        clientId: "old-ms-id",
+        clientSecret: "new-ms-secret",
+      });
     });
   });
 });
