@@ -754,6 +754,62 @@ describe("GmailAdapter", () => {
     });
   });
 
+  describe("search folder mapping (documented in: operators)", () => {
+    // Gmail SEARCH (the `q` param) excludes Trash/Spam by default and only
+    // documents `in:trash`/`in:spam` to reach them — `label:TRASH`/`label:SPAM`
+    // relying on the `q` parser's undocumented label aliasing is unreliable.
+    // `list()` uses `labelIds`, a different API param where label IDs are
+    // correct; that path is untouched.
+
+    it("uses in:trash (not label:TRASH) and keeps other filters", async () => {
+      mockList.mockResolvedValue({ data: { messages: [] } });
+      await adapter.search({ folder: "TRASH", from: "vendor@x.com" });
+      const q = mockList.mock.calls[0][0].q as string;
+      expect(q).toContain("in:trash");
+      expect(q).toContain("from:vendor@x.com");
+      expect(q).not.toContain("label:TRASH");
+    });
+
+    it("uses in:spam for SPAM folder", async () => {
+      mockList.mockResolvedValue({ data: { messages: [] } });
+      await adapter.search({ folder: "SPAM" });
+      expect(mockList).toHaveBeenCalledWith(
+        expect.objectContaining({ q: "in:spam" }),
+      );
+    });
+
+    it("uses in:inbox for INBOX folder", async () => {
+      mockList.mockResolvedValue({ data: { messages: [] } });
+      await adapter.search({ folder: "INBOX" });
+      expect(mockList).toHaveBeenCalledWith(
+        expect.objectContaining({ q: "in:inbox" }),
+      );
+    });
+
+    it("uses in:sent for SENT folder", async () => {
+      mockList.mockResolvedValue({ data: { messages: [] } });
+      await adapter.search({ folder: "SENT" });
+      expect(mockList).toHaveBeenCalledWith(
+        expect.objectContaining({ q: "in:sent" }),
+      );
+    });
+
+    it("uses in:drafts (not in:draft, not label:DRAFT) for DRAFTS folder", async () => {
+      mockList.mockResolvedValue({ data: { messages: [] } });
+      await adapter.search({ folder: "DRAFTS" });
+      const q = mockList.mock.calls[0][0].q as string;
+      expect(q).toBe("in:drafts");
+      expect(q).not.toBe("in:draft");
+      expect(q).not.toContain("label:DRAFT");
+    });
+
+    it("throws the unknown-folder error for an invalid folder", async () => {
+      await expect(
+        adapter.search({ folder: "BOGUS" as never }),
+      ).rejects.toThrow(/unknown folder/i);
+    });
+  });
+
   describe("replyTo sets In-Reply-To AND References", () => {
     it("includes both headers in the raw message", async () => {
       mockDraftsCreate.mockResolvedValue({ data: { id: "draft1" } });

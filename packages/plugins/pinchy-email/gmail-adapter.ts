@@ -20,6 +20,23 @@ const mapFolder = createFolderMapper({
   SPAM: "SPAM",
 });
 
+// Search (the `q` param used by buildGmailQuery) and list (the `labelIds` API
+// param used by list() below) need different folder values. Gmail's search
+// query language only documents `in:trash`/`in:spam` (etc.) to scope a search
+// to a folder; `label:TRASH`/`label:SPAM` happen to also work today via the
+// `q` parser's undocumented label aliasing, but that's undocumented and
+// Gmail search excludes Trash/Spam by default, so relying on it risks
+// silently empty results. `list()` instead uses the `labelIds` API param,
+// where label IDs (mapFolder above) are the correct, documented value — that
+// path is unaffected by this split.
+const mapFolderToSearchOperator = createFolderMapper({
+  INBOX: "in:inbox",
+  SENT: "in:sent",
+  DRAFTS: "in:drafts",
+  TRASH: "in:trash",
+  SPAM: "in:spam",
+});
+
 function buildGmailQuery(opts: SearchOptions): string {
   const parts: string[] = [];
   // Wrap in outer quotes only when the value has whitespace or characters
@@ -32,7 +49,7 @@ function buildGmailQuery(opts: SearchOptions): string {
   if (opts.subject) parts.push(`subject:${quote(opts.subject)}`);
   if (opts.unread) parts.push("is:unread");
   if (opts.sinceDays != null) parts.push(`newer_than:${opts.sinceDays}d`);
-  if (opts.folder) parts.push(`label:${mapFolder(opts.folder)}`);
+  if (opts.folder) parts.push(mapFolderToSearchOperator(opts.folder));
   if (parts.length === 0)
     throw new Error("search requires at least one filter field");
   return parts.join(" ");
