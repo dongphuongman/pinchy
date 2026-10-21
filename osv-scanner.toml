@@ -1,19 +1,17 @@
 # OSV Scanner configuration
 # https://google.github.io/osv-scanner/configuration/
 
-# openclaw is a devDependency here (schema-validation integration test), so in
-# THIS lockfile its tree is dev-only. But the SAME openclaw version is the
-# runtime of the OpenClaw image, which installs it with `npm install -g`
-# (Dockerfile.openclaw). That install reads neither this lockfile nor the root
-# `pnpm.overrides`: openclaw ships an npm-shrinkwrap.json, and npm installs
-# exactly the versions it locks — its WHOLE transitive tree, not just the direct
-# dependencies. A root override therefore clears the scanner for openclaw's dev
-# tree only; the image keeps whatever the shrinkwrap says. Before accepting or
-# overriding a finding that routes through openclaw, look the package up in the
-# shrinkwrap of the pinned version (`npm pack openclaw@<version>` and read
-# package/npm-shrinkwrap.json). `npm view openclaw@<version> dependencies` is
-# not enough: it lists direct dependencies only and hides every transitive pin.
-# The real fix for those is an openclaw bump (update-openclaw skill).
+# openclaw is in the lockfile twice over: as a devDependency of packages/web
+# (the schema-validation integration test) and as the only dependency of
+# packages/openclaw-runtime, which IS the runtime of the OpenClaw image —
+# Dockerfile.openclaw installs it from this lockfile with --frozen-lockfile. So
+# a finding routed through openclaw ships in production, and a root
+# `pnpm.overrides` entry is a real fix for it: the image gets the overridden
+# version. Bound such an override to the dependent's major
+# (openclaw-runtime-closure.test.ts fails otherwise). Still outside the lockfile
+# in that image: the llama-cpp provider (`openclaw plugins install`, npm) and
+# the /opt/pinchy-*-deps bundles (npm install of each plugin's package.json) —
+# a scan here says nothing about those.
 #
 # MAL-2026-3432, GHSA-w5hq-g745-h8pq (uuid) and GHSA-q8mj-m7cp-5q26 (qs) were
 # dropped 2026-07-21, and GHSA-v2v4-37r5-5v8g (with MAL-2026-3432 as its alias)
